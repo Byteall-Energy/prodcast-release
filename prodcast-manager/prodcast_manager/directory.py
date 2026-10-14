@@ -49,8 +49,8 @@ def validate_directory(value, connection_only=False):
             out[key] = text.strip()
     try:
         u = urlsplit(out['url'])
-        port = u.port if u.port is not None else 636
-        if (u.scheme != 'ldaps' or not u.hostname or u.username or u.password
+        port = u.port if u.port is not None else (389 if u.scheme=='ldap' else 636)
+        if (u.scheme not in ('ldap','ldaps') or not u.hostname or u.username or u.password
                 or u.path not in ('', '/') or u.query or u.fragment or not 1 <= port <= 65535
                 or not re.fullmatch(r'(?=.{1,253}$)[a-zA-Z0-9.-]+', u.hostname)
                 or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?', label) for label in u.hostname.split('.'))):
@@ -59,9 +59,14 @@ def validate_directory(value, connection_only=False):
         try: ipaddress.ip_address(u.hostname)
         except ValueError: pass
         else: raise ValueError()
-        out['url'] = 'ldaps://' + u.hostname.lower() + ':' + str(port)
+        out['url'] = u.scheme+'://' + u.hostname.lower() + ':' + str(port)
     except ValueError:
-        raise ValueError(tr('Укажите ldaps://имя-контроллера:636. Нужны DNS-имя и защищённое соединение.')) from None
+        raise ValueError(tr('Укажите ldaps://имя-контроллера:636 или ldap://имя-контроллера:389. Требуется корректное DNS-имя.')) from None
+    if u.scheme=='ldap':
+        if value.get('allow_plain_ldap') is not True:
+            raise ValueError(tr('LDAP без TLS передаёт пароли без шифрования. Подтвердите небезопасный режим отдельно.'))
+        out['allow_plain_ldap']=True
+        out['ca_pem']=''
     if out['ca_pem']:
         out['ca_pem'] = read_ca(out['ca_pem'].encode('utf-8'))
     if not connection_only:
@@ -92,7 +97,7 @@ def app_directory(value):
     if value is None:return None
     if not value.get('enabled',False):return {'mode':'disabled'}
     c=validate_directory(value)
-    return dict(mode='ldaps',server_uri=c['url'],user_dn_template='%(user)s@'+c['domain'],
+    return dict(mode=urlsplit(c['url']).scheme,server_uri=c['url'],user_dn_template='%(user)s@'+c['domain'],
                 ca_certificate=c['ca_pem'],connect_timeout=5,receive_timeout=10,
                 group_filter_enabled=True,user_search_base=c['base_dn'],
                 user_search_attribute=c['user_search_attribute'],allowed_group_dns=c['group_dn'],

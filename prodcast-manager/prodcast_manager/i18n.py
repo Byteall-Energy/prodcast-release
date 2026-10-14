@@ -7,6 +7,13 @@ EN.update(DIRECTORY_EN)
 from .maintenance_translations import EN as MAINTENANCE_EN
 EN.update(MAINTENANCE_EN)
 EN.update({
+    'Укажите ldaps://имя-контроллера:636 или ldap://имя-контроллера:389. Требуется корректное DNS-имя.':'Enter ldaps://controller-name:636 or ldap://controller-name:389. A valid DNS hostname is required.',
+    'LDAP без TLS: CA не используется, пароли передаются без шифрования.':'LDAP without TLS: no CA is used; passwords are sent unencrypted.',
+    'LDAP без TLS передаёт пароли без шифрования. Подтвердите небезопасный режим отдельно.':'LDAP without TLS sends passwords unencrypted. Explicitly acknowledge insecure mode.',
+    'Разрешить ldap:// без TLS: пароли передаются без шифрования (не рекомендуется)':'Allow ldap:// without TLS: passwords are sent unencrypted (not recommended)',
+    'Адрес LDAP / LDAPS':'LDAP / LDAPS address',
+    'Проверить LDAP / LDAPS с App VM':'Check LDAP / LDAPS from App VM',
+    'LDAP без TLS: проверка выполнена, соединение не зашифровано и сертификат не проверяется.':'LDAP without TLS: check completed; connection is unencrypted and no certificate is verified.',
     'пропущен — существующая установка сохранена':'skipped — existing installation preserved',
     'AI: пакеты не выбраны; обновление пропущено, существующая установка сохранена.':'AI: no packages selected; update skipped and existing installation preserved.',
     'Предыдущая операция AI уже начиналась: журнал восстановления сохранён. При необходимости повторите или остановите её отдельно.':'A previous AI operation already started; its recovery journal is preserved. Retry or stop it separately if needed.',

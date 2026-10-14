@@ -13,6 +13,11 @@ class ProbeFailure(Exception):
 
 def tls_connection(config):
     endpoint = urlsplit(config['url'])
+    if endpoint.scheme=='ldap':
+        if config.get('allow_plain_ldap') is not True:raise ProbeFailure('plaintext_not_allowed')
+        with socket.create_connection((endpoint.hostname,endpoint.port or 389),timeout=8):
+            return {'transport':'ldap','encrypted':False,'certificate_verified':False}
+    if endpoint.scheme!='ldaps':raise ProbeFailure('directory_error')
     context = ssl.create_default_context(cadata=config['ca_pem'] or None)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     with socket.create_connection((endpoint.hostname, endpoint.port or 636), timeout=8) as sock:
@@ -25,11 +30,13 @@ def directory_check(config, username='', password='', test_user=False):
     from ldap3.utils.conv import escape_filter_chars
     from ldap3.utils.dn import parse_dn
     from ldap3.core.exceptions import LDAPException
-    # Only verified LDAPS. No referral following or credentials sent to a second server.
+    # No referral following, automatic downgrade or second-server credential forwarding.
     endpoint = urlsplit(config['url'])
+    secure=endpoint.scheme=='ldaps'
+    if not secure and (endpoint.scheme!='ldap' or config.get('allow_plain_ldap') is not True):raise ProbeFailure('plaintext_not_allowed')
     tls = Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLSv1_2,
-              ca_certs_data=config['ca_pem'] or None, valid_names=[endpoint.hostname], sni=endpoint.hostname)
-    server = Server(endpoint.hostname, port=endpoint.port or 636, use_ssl=True, tls=tls, get_info=NONE, connect_timeout=8)
+              ca_certs_data=config['ca_pem'] or None, valid_names=[endpoint.hostname], sni=endpoint.hostname) if secure else None
+    server = Server(endpoint.hostname, port=endpoint.port or (636 if secure else 389), use_ssl=secure, tls=tls, get_info=NONE, connect_timeout=8)
     for key in ('base_dn', 'group_dn'):
         try: parse_dn(config[key])
         except LDAPException: raise ProbeFailure('invalid_dn') from None
