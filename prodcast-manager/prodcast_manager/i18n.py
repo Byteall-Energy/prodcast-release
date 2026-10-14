@@ -7,6 +7,10 @@ EN.update(DIRECTORY_EN)
 from .maintenance_translations import EN as MAINTENANCE_EN
 EN.update(MAINTENANCE_EN)
 EN.update({
+    'LDAP: проверка соединения успешна.':'LDAP: connection check successful.',
+    'LDAP: проверка успешна. Служебный вход, Base DN и группа допуска проверены.':'LDAP: check successful. Service-account login, Base DN and allowed group verified.',
+    'LDAP: пробный вход успешен, пользователь входит в группу допуска. Это не включает вход в App.':'LDAP: test login successful; the user belongs to the allowed group. This does not enable App login.',
+    'Предупреждение: соединение LDAP не зашифровано; сертификат не проверяется.':'Warning: the LDAP connection is unencrypted; no certificate is verified.',
     'Укажите ldaps://имя-контроллера:636 или ldap://имя-контроллера:389. Требуется корректное DNS-имя.':'Enter ldaps://controller-name:636 or ldap://controller-name:389. A valid DNS hostname is required.',
     'LDAP без TLS: CA не используется, пароли передаются без шифрования.':'LDAP without TLS: no CA is used; passwords are sent unencrypted.',
     'LDAP без TLS передаёт пароли без шифрования. Подтвердите небезопасный режим отдельно.':'LDAP without TLS sends passwords unencrypted. Explicitly acknowledge insecure mode.',

@@ -136,8 +136,12 @@ class DirectoryDialog(tk.Toplevel):
                 text='LDAPS: сертификат и соединение проверены с App VM.'
                 if result.get('group_found'):text='LDAPS: служебный вход, Base DN и группа допуска проверены.'
                 if result.get('user_bind'):text='Пробный вход успешен, пользователь входит в группу допуска. Это не включает вход в App.'
-                if result.get('encrypted') is False:text='LDAP без TLS: проверка выполнена, соединение не зашифровано и сертификат не проверяется.'
-                self.status.set(tr(text))
+                if result.get('encrypted') is False:
+                    text='LDAP: проверка соединения успешна.'
+                    if result.get('group_found'):text='LDAP: проверка успешна. Служебный вход, Base DN и группа допуска проверены.'
+                    if result.get('user_bind'):text='LDAP: пробный вход успешен, пользователь входит в группу допуска. Это не включает вход в App.'
+                    self.status.set(tr(text)+'\n'+tr('Предупреждение: соединение LDAP не зашифровано; сертификат не проверяется.'))
+                else:self.status.set(tr(text))
             else:self.status.set(tr(ERRORS.get(result.get('code'),'Ошибка проверки SSH/LDAP. Проверьте SSH-отпечаток, доступ к App VM и настройки LDAP.')))
         except queue.Empty:pass
         self.timer=self.after(100,self.poll)
