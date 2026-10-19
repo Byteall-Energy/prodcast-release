@@ -28,6 +28,12 @@ release for static/offline dependencies. Leave it empty to select the newest
 valid earlier release automatically. Select `build_only` to build and validate
 without creating a draft, tags, or published release.
 
+Release workflow artifacts are retained for one day, including build-only
+outputs. Download those outputs before they expire. Standalone Manager/Agent
+build artifacts and Agent CI SBOM reports are retained for seven days. Published
+release assets are separate from Actions artifacts and do not expire under this
+policy.
+
 The workflow freezes all five full commit SHAs before starting parallel jobs.
 Every checkout uses its frozen SHA even if `main` moves later. It then builds:
 

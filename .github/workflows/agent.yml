@@ -73,4 +73,4 @@ jobs:
           path: dist/package/ProdcastAgentSetup-*.exe
           if-no-files-found: error
           compression-level: 0
-          retention-days: 30
+          retention-days: 7

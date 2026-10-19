@@ -71,7 +71,7 @@ jobs:
           name: source-snapshot
           path: source-snapshot.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
 
   functional:
@@ -140,7 +140,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends gcc libpq-dev unixodbc-dev
           python -m pip install -r app/backend/requirements.txt
-          python -m pip install --no-deps --no-index app/backend/vendor/prodcast_petex_plugins-0.2.0-py3-none-any.whl
+          # Worker owns its plugin and runtime dependencies; use its frozen source.
+          (cd worker && python -m pip install -r requirements-worker.txt)
+          python -m pip check
       - name: Test module lifecycles and all four Worker round trips
         working-directory: app/backend/mainapp
         run: |
@@ -156,7 +158,7 @@ jobs:
           name: functional-test-report
           path: app/backend/mainapp/functional-tests.log
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 1
 
   app:
     name: Build App
@@ -201,6 +203,7 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   agent:
     name: Build Agent
@@ -240,6 +243,7 @@ jobs:
           path: dist/package/ProdcastAgentSetup-*.exe
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
       - name: Upload internal Agent assembly metadata
         uses: actions/upload-artifact@v4
         with:
@@ -288,6 +292,7 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   ai:
     name: Build AI
@@ -325,6 +330,7 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   manager:
     name: Build Manager
@@ -372,6 +378,7 @@ jobs:
           path: prodcast-manager/dist/ProdCast-Manager-${{ env.RELEASE_VERSION }}.exe
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   assemble:
     name: Assemble and validate Complete
@@ -454,7 +461,7 @@ jobs:
           path: dist/assembled/*
           if-no-files-found: error
           compression-level: 0
-          retention-days: 30
+          retention-days: 1
 
   publish:
     name: Draft, tag snapshot, and publish
