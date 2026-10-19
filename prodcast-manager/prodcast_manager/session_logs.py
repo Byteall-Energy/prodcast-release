@@ -17,6 +17,7 @@ class SessionLog:
         self.stamp=datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]
         self.path=self.directory/('manager-'+self.stamp+'.log')
         self.lock=threading.RLock();self.secrets=set()
+        self.remote_listener=None
         self.path.touch(exist_ok=False)
 
     def protect(self,data):
@@ -61,5 +62,8 @@ class SessionLog:
         if not re.fullmatch(r'[a-z0-9_-]+',role+'-'+action):raise ValueError('Invalid log name')
         with self.lock:
             path=self.directory/(self.stamp+'-'+role+'-'+action+'.log')
-            with path.open('a',encoding='utf-8') as f:f.write(self.redact(text)+'\n')
-            return path
+            clean=self.redact(text)
+            with path.open('a',encoding='utf-8') as f:f.write(clean+'\n')
+        if self.remote_listener:
+            self.remote_listener(role,action,clean)
+        return path
