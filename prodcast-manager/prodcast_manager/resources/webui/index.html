@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>ProdCast Manager</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="qrc:///qtwebchannel/qwebchannel.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="app">
+    <header class="chrome"><div class="brand"><img src="../prodcast-manager.png" alt=""><div><strong>ProdCast Manager</strong><span id="version" class="muted small"></span></div></div><div class="inline"><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option></select><button id="admin-access">App administrator access</button></div></header>
+    <section class="context"><label id="site-label">Site <select id="site-selector"></select></label><div class="actions"><button data-action="new-site">New site</button><button data-action="import-profile">Open profile…</button><button data-action="save-draft">Save draft</button></div><span id="global-status" role="status" aria-live="polite"></span></section>
+    <div class="workspace"><nav id="navigation" aria-label="Manager sections"></nav><main id="main" aria-live="polite"><h1>ProdCast Manager</h1><p>Starting desktop interface…</p></main></div>
+    <footer><span id="profile-path"></span><span id="footer-status"></span></footer>
+  </div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+  <div id="notification" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

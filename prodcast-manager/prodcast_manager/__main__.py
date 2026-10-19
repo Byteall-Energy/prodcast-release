@@ -30,7 +30,7 @@ def main():
     parser.add_argument('--ollama-components',default='',help='Separate Ollama components ZIP from the offline release')
     a=parser.parse_args();home=application_directory();path=Path(a.site).resolve() if a.site else last_directory(home)/'site.json';directory=path.parent
     if a.action=='gui':
-        from .gui import main as gui
+        from .html_ui import main as gui
         gui();return
     if a.action=='self-test':
         for name in ('linux.py','worker.ps1','worker-service-runner.py','app.env.in','worker-grants.sql','directory_probe.py','maintenance_linux.py','workers_linux.py','ai-documents.sql'):assert (RESOURCES/name).stat().st_size>100
@@ -50,28 +50,8 @@ def main():
             [x509.load_pem_x509_certificate(tls['ca.crt'].encode())],serialization.NoEncryption())
         assert read_pfx(data,'',c['public_url'])['url']==c['public_url']
         if a.gui_smoke:
-            import tkinter as tk
-            import tempfile
-            from .gui import App
-            with tempfile.TemporaryDirectory(prefix='manager-self-test-',dir=home) as temporary:
-                test_home=Path(temporary)
-                v=open_credentials(test_home/'test-site');v.data={'check':'synthetic'};v.save()
-                assert open_credentials(test_home/'test-site').data=={'check':'synthetic'}
-                root=tk.Tk();root.withdraw();app=App(root,log_dir=test_home/'logs',app_home=test_home);root.update()
-                assert len(app.hostvars)==5 and all(not h['address'].get() for h in app.hostvars.values())
-                assert not app.install_ai.get()
-                configured=example();configured['install_ai']=False;configured['hosts']['ai']['address']=''
-                app.populate(configured);assert app.config()['schema']==1
-                app.worker_count.set('16');assert len(app.server_tree.get_children())==19
-                app.worker_count.set('1');assert len(worker_roles(app.config()))==1
-                app.language_choice.set('English');app.change_language()
-                assert tr('Установить AI')=='Install AI'
-                from .directory_dialog import DirectoryDialog
-                dialog=DirectoryDialog(root,{},lambda value:None,lambda *args:{'ok':True});dialog.withdraw()
-                from .directory_dialog import NOTICE
-                assert 'applied' in tr(NOTICE) and not dialog.enabled.get()
-                dialog.close()
-                root.destroy()
+            from .html_ui import smoke_test
+            smoke_test(home)
         print('PASS: bundled resources, configuration and PFX import'+(' and portable credentials / GUI initialization' if a.gui_smoke else ''));return
     if a.action=='init':
         if path.exists():raise ValueError('Site file already exists')

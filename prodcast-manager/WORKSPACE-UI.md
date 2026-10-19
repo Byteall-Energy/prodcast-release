@@ -4,7 +4,11 @@ The desktop application now uses a site workspace with seven sections. Existing 
 
 New sites have empty server addresses, App URL and management-PC IPv4. Grey documentation-range examples are separate visual hints; they are never entry values and cannot be saved or used for connections. Existing profiles retain their configured addresses. The main window, custom dialogs, nested windows and future Tk dialogs use the shared ProdCast icon; Windows process identity is set to ProdCast Manager.
 
-The current desktop renderer is Tkinter with the `clam` theme. The HTML design preview illustrates the layout and behavior; its rounded surfaces and typography are not reproduced by standard Tk controls. A close visual match requires a dedicated Tk theme/component styling pass; matching the HTML rendering exactly would require an embedded web UI and its packaging/runtime integration.
+The default desktop renderer now uses local HTML/CSS inside bundled Qt WebEngine. It follows the preview's application shell, sidebar, grouped fields, conditional credential inputs and in-window dialogs. All styles, scripts and images are local; no web server, CDN or separately installed browser runtime is required. The Python deployment engines remain responsible for server mutations and validation. The previous Tk workspace remains available as source for migration/regression coverage; it is no longer the default GUI entry point.
+
+The single-file EXE is larger because it includes Qt/Chromium. Browser navigation, remote asset requests, downloads, plugins and persistent browser storage are disabled. Only the fixed local interface can reach the allowlisted WebChannel API. File selection uses branded desktop dialogs; operation confirmations and settings forms use the HTML interface. Initial administrator credentials can be viewed while an operation runs, without saving/revalidating the profile.
+
+Builds use `release/manager.spec`, which bundles the Qt wheel's C++ redistributables consistently at the onefile root and nested locations. This avoids loading Python's older `vcruntime140.dll` before Qt. The build also excludes unrelated ICU DLLs discovered on PATH, preserving Qt's use of the Windows ICU API. `build.ps1` runs the controller/engine tests, `release/check_html_ui.py` against the real renderer/bridge, and the packaged HTML smoke test with a timeout. Qt package versions are pinned in both runtime and build requirements. Existing workflow version stamping and one-EXE artifact naming continue to apply.
 
 ## Everyday use
 
