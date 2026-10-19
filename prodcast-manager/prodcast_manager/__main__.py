@@ -60,7 +60,7 @@ def main():
                 root=tk.Tk();root.withdraw();app=App(root,log_dir=test_home/'logs',app_home=test_home);root.update()
                 assert len(app.hostvars)==5 and app.config()['schema']==1
                 assert app.config()['hosts']['ai']['address']=='' and not app.install_ai.get()
-                app.worker_count.set('16');assert len(app.hostframe.grid_slaves(column=0))==20
+                app.worker_count.set('16');assert len(app.server_tree.get_children())==19
                 app.worker_count.set('1');assert len(worker_roles(app.config()))==1
                 app.language_choice.set('English');app.change_language()
                 assert tr('Установить AI')=='Install AI'

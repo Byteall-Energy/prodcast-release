@@ -86,135 +86,7 @@ class AdminAccessDialog(tk.Toplevel):
             menu.grab_release()
         return 'break'
 
-class App:
-    def __init__(self,root,log_dir=None,app_home=None):
-        self.root=root; self.events=queue.Queue(); self.busy=False; self.auth={}; self.vars={}; self.hostvars={}
-        self.session_log=SessionLog(log_dir)
-        self.home=Path(app_home) if app_home else application_directory()
-        preferences=data_directory(self.home)/'ui.json'
-        try:chosen=json.loads(preferences.read_text('utf-8')).get('language','ru') if preferences.exists() else 'ru'
-        except (OSError,ValueError):chosen='ru'
-        set_language(chosen if chosen in ('ru','en') else 'ru')
-        self.directory=last_directory(self.home)
-        self.root.title(tr('ProdCast Manager {v0} — установка и обновление').format(v0=__version__)); root.geometry('1180x860'); root.minsize(1000,720)
-        icon=Path(__file__).parent/'resources/prodcast-manager.ico'
-        if icon.exists():
-            try:self.root.iconbitmap(str(icon))
-            except tk.TclError:pass
-        style=ttk.Style(); style.theme_use('clam'); style.configure('TButton',padding=6); style.configure('TLabel',padding=2)
-        frame=ttk.Frame(root,padding=16); frame.pack(fill='both',expand=True)
-        languagebar=ttk.Frame(frame);languagebar.pack(anchor='e')
-        ttk.Label(languagebar,text=tr('Язык / Language')).pack(side='left')
-        self.language_choice=tk.StringVar(value='English' if language()=='en' else tr('Русский'))
-        selector=ttk.Combobox(languagebar,textvariable=self.language_choice,values=[tr('Русский'),'English'],state='readonly',width=12)
-        selector.pack(side='left',padx=6);selector.bind('<<ComboboxSelected>>',self.change_language)
-        ttk.Label(frame,text='ProdCast Manager',font=('Segoe UI',22,'bold')).pack(anchor='w')
-        ttk.Label(frame,text=tr('App / DB + Redis / AI (по выбору) / Workers')).pack(anchor='w')
-        ttk.Label(frame,text=tr('Установка и обновление через SSH. Состояние сохраняется в журнале площадки.')).pack(anchor='w',pady=(0,8))
-        tabs=ttk.Notebook(frame); tabs.pack(fill='both',expand=True)
-        connections=ttk.Frame(tabs,padding=12); settings=ttk.Frame(tabs,padding=12); certificates=ttk.Frame(tabs,padding=12); actions=ttk.Frame(tabs,padding=12)
-        connection_tab=connections
-        scroll_canvas=tk.Canvas(connection_tab,highlightthickness=0)
-        scroll_bar=ttk.Scrollbar(connection_tab,orient='vertical',command=scroll_canvas.yview)
-        scroll_bar.pack(side='right',fill='y');scroll_canvas.pack(side='left',fill='both',expand=True)
-        scroll_canvas.configure(yscrollcommand=scroll_bar.set)
-        connections=ttk.Frame(scroll_canvas)
-        inner=scroll_canvas.create_window((0,0),window=connections,anchor='nw')
-        connections.bind('<Configure>',lambda e:scroll_canvas.configure(scrollregion=scroll_canvas.bbox('all')))
-        scroll_canvas.bind('<Configure>',lambda e:scroll_canvas.itemconfigure(inner,width=e.width))
-        tabs.add(connection_tab,text=tr('1. Серверы')); tabs.add(settings,text=tr('2. Площадка')); tabs.add(certificates,text=tr('3. Сертификат App')); tabs.add(actions,text=tr('4. Установка и обновление'))
-        ttk.Label(connections,text='Linux: Ubuntu 22.04/24.04/26.04 LTS, Debian 12/13, RHEL 9 (amd64). Workers: Windows Server 2019/2022/2025 x64.').grid(row=0,column=0,columnspan=8,sticky='w',pady=8)
-        countbar=ttk.Frame(connections);countbar.grid(row=1,column=0,columnspan=8,sticky='w',pady=8)
-        ttk.Label(countbar,text=tr('Количество Workers')).pack(side='left')
-        self.worker_count=tk.StringVar(value='2')
-        ttk.Combobox(countbar,textvariable=self.worker_count,values=[str(n) for n in range(1,MAX_WORKERS+1)],state='readonly',width=5).pack(side='left',padx=8)
-        self.hostframe=ttk.Frame(connections);self.hostframe.grid(row=2,column=0,columnspan=8,sticky='ew')
-        connections.columnconfigure(5,weight=1)
-        self.ai_widgets=[]
-        self.install_ai=tk.BooleanVar(value=True)
-        ttk.Checkbutton(connections,text=tr('Установить AI'),variable=self.install_ai).grid(row=7,column=0,columnspan=8,sticky='w',pady=8)
-        self.render_servers()
-        self.worker_count.trace_add('write',lambda *_:self.render_servers())
-        self.install_ai.trace_add('write',lambda *_:self.toggle_ai())
-        ttk.Label(connections,text=tr('Сверьте SHA256 ключа каждого сервера с его администратором. Доступ сохраняется в папке площадки рядом с Manager.\nSudo-пароль может отличаться от SSH-пароля. Для root и sudo без пароля оставьте поле пустым.'),wraplength=1000).grid(row=8,column=0,columnspan=8,sticky='w',pady=15)
-        buttons=ttk.Frame(connections);buttons.grid(row=9,column=0,columnspan=8,sticky='w')
-        ttk.Button(buttons,text=tr('Открыть site.json'),command=self.load).pack(side='left',padx=4)
-        ttk.Button(buttons,text=tr('Новая площадка'),command=self.pick_directory).pack(side='left',padx=4)
-        ttk.Button(buttons,text=tr('Сохранить конфигурацию'),command=self.save).pack(side='left',padx=4)
-        ttk.Button(buttons,text=tr('Добавить Workers…'),command=self.add_workers).pack(side='left',padx=4)
-        workerbar=ttk.Frame(connections);workerbar.grid(row=11,column=0,columnspan=8,sticky='w',pady=8)
-        ttk.Label(workerbar,text=tr('Выбранный Worker')).pack(side='left')
-        self.selected_worker=tk.StringVar()
-        self.worker_selector=ttk.Combobox(workerbar,textvariable=self.selected_worker,state='readonly',width=12)
-        self.worker_selector.pack(side='left',padx=8)
-        ttk.Button(workerbar,text=tr('Переустановить Worker…'),command=lambda:self.worker_action('worker-repair')).pack(side='left',padx=4)
-        ttk.Button(workerbar,text=tr('Удалить Worker…'),command=lambda:self.worker_action('worker-remove')).pack(side='left',padx=4)
-        self.dirlabel=ttk.Label(connections,text=str(self.directory),wraplength=1000);self.dirlabel.grid(row=10,column=0,columnspan=8,sticky='w',pady=8)
-        fields=[('site_id',tr('ID площадки')),('public_url',tr('HTTPS адрес App')),('admin_ip',tr('IPv4 рабочего ПК администратора')),('admin_username',tr('Имя администратора App')),('admin_email',tr('Email администратора')),('app_subnet',tr('Свободная подсеть Docker /24'))]
-        for row,(key,label) in enumerate(fields):
-            self.vars[key]=tk.StringVar(); ttk.Label(settings,text=label).grid(row=row,column=0,sticky='w',pady=4)
-            ttk.Entry(settings,textvariable=self.vars[key],width=65).grid(row=row,column=1,sticky='ew',padx=12)
-        settings.columnconfigure(1,weight=1)
-        ttk.Label(settings,text=tr('AI использует доступный GPU с готовым драйвером либо CPU. Manager не устанавливает драйверы.\nДля PFX используйте вкладку «Сертификат App», сохранив здесь внутренний адрес (для новой площадки — https://IP_App).\nИзменение адресов основных VM выбирает отдельную площадку.'),wraplength=1000).grid(row=13,column=0,columnspan=2,sticky='w',pady=10)
-        self.release=tk.StringVar(); self.trusted=tk.StringVar();self.master=tk.StringVar();self.ai_model=tk.StringVar();self.ai_ollama=tk.StringVar()
-        self.certificate_form(certificates)
-        ttk.Button(settings,text=tr('Подключение активации App…'),command=self.activation_dialog).grid(row=10,column=0,columnspan=2,sticky='w',pady=12)
-        ttk.Button(settings,text=tr('LDAP / Active Directory…'),command=self.directory_dialog).grid(row=11,column=0,columnspan=2,sticky='w',pady=4)
-        row=ttk.Frame(actions);row.pack(fill='x')
-        ttk.Label(row,text=tr('Полный релиз ZIP / каталог:')).pack(side='left');ttk.Entry(row,textvariable=self.release).pack(side='left',fill='x',expand=True,padx=8)
-        ttk.Button(row,text='ZIP…',command=lambda:self.release.set(filedialog.askopenfilename(filetypes=[('Complete release ZIP','*.zip')]) or self.release.get())).pack(side='left')
-        ttk.Button(row,text=tr('Каталог…'),command=lambda:self.release.set(filedialog.askdirectory() or self.release.get())).pack(side='left',padx=4)
-        row=ttk.Frame(actions);row.pack(fill='x',pady=6)
-        ttk.Label(row,text=tr('Компоненты Ollama для AI (ZIP):')).pack(side='left')
-        self.ai_ollama_entry=ttk.Entry(row,textvariable=self.ai_ollama)
-        self.ai_ollama_entry.pack(side='left',fill='x',expand=True,padx=8)
-        self.ai_ollama_button=ttk.Button(row,text=tr('Выбрать Ollama…'),command=lambda:self.ai_ollama.set(filedialog.askopenfilename(filetypes=[('Ollama ZIP','*.zip')]) or self.ai_ollama.get()))
-        self.ai_ollama_button.pack(side='left')
-        row=ttk.Frame(actions);row.pack(fill='x',pady=6)
-        ttk.Label(row,text=tr('ZIP моделей AI для офлайн-установки:')).pack(side='left')
-        self.ai_model_entry=ttk.Entry(row,textvariable=self.ai_model)
-        self.ai_model_entry.pack(side='left',fill='x',expand=True,padx=8)
-        self.ai_model_button=ttk.Button(row,text=tr('Выбрать модели…'),command=lambda:self.ai_model.set(filedialog.askopenfilename(filetypes=[('AI models ZIP','*.zip'),('Legacy chat model','*.gguf')]) or self.ai_model.get()))
-        self.ai_model_button.pack(side='left')
-        row=ttk.Frame(actions);row.pack(fill='x',pady=6)
-        ttk.Label(row,text=tr('SHA256 manifest релиза:')).pack(side='left');ttk.Entry(row,textvariable=self.trusted,width=70).pack(side='left',fill='x',expand=True,padx=8)
-        row=ttk.Frame(actions);row.pack(fill='x',pady=8)
-        ttk.Label(row,text=tr('Данные доступа сохраняются автоматически рядом с Manager.')).pack(side='left',padx=8)
-        ttk.Button(row,text=tr('Сохранить данные доступа'),command=self.save_vault).pack(side='left')
-        ttk.Button(row,text=tr('Доступ администратора App'),command=self.show_admin).pack(side='left',padx=4)
-        bar=ttk.Frame(actions);bar.pack(fill='x',pady=8)
-        for label,mode in [(tr('План'),'plan'),(tr('Проверить доступ'),'check'),(tr('Установить'),'install'),(tr('Обновить'),'update'),(tr('Восстановить'),'repair'),(tr('Состояние'),'status'),(tr('Резервная копия'),'backup'),(tr('Повторить AI'),'ai')]:
-            ttk.Button(bar,text=label,command=lambda m=mode:self.start(m)).pack(side='left',padx=3)
-        ttk.Button(bar,text=tr('Остановить предыдущую операцию'),command=self.stop_previous).pack(side='left',padx=3)
-        bar=ttk.Frame(actions);bar.pack(fill='x',pady=4)
-        for label,mode in [('Выгрузить бэкап…','export'),('Восстановить из бэкапа…','restore'),('Импорт профиля из бэкапа…','import')]:
-            ttk.Button(bar,text=tr(label),command=lambda m=mode:self.maintenance(m)).pack(side='left',padx=3)
-        ttk.Button(bar,text=tr('Очистить VM…'),command=self.reset_dialog).pack(side='left',padx=3)
-        logbar=ttk.Frame(actions);logbar.pack(fill='x')
-        ttk.Button(logbar,text=tr('Копировать выделенное'),command=self.copy_log).pack(side='left',padx=3)
-        ttk.Button(logbar,text=tr('Копировать весь лог'),command=lambda:self.copy_log(all_text=True)).pack(side='left',padx=3)
-        ttk.Button(logbar,text=tr('Открыть папку логов'),command=self.open_logs).pack(side='left',padx=3)
-        ttk.Label(actions,text=tr('Локальные логи: ')+str(self.session_log.directory),wraplength=1000).pack(anchor='w')
-        logframe=ttk.Frame(actions);logframe.pack(fill='both',expand=True,pady=8)
-        scroll=ttk.Scrollbar(logframe);scroll.pack(side='right',fill='y')
-        self.output=tk.Text(logframe,wrap='word',height=18,bg='#14202b',fg='#e2eaf2',font=('Consolas',10),state='disabled',exportselection=False,yscrollcommand=scroll.set)
-        self.output.pack(side='left',fill='both',expand=True);scroll.config(command=self.output.yview)
-        self.output.bind('<Control-KeyPress>',self.log_shortcut)
-        self.output.bind('<<Copy>>',lambda e:self.copy_log())
-        menu=tk.Menu(self.output,tearoff=False);menu.add_command(label=tr('Копировать выделенное'),command=self.copy_log)
-        menu.add_command(label=tr('Копировать всё'),command=lambda:self.copy_log(all_text=True))
-        menu.add_command(label=tr('Выделить всё'),command=self.select_log)
-        self.output.bind('<Button-3>',lambda e:menu.tk_popup(e.x_root,e.y_root))
-        ttk.Label(actions,text=tr('Обновление требует окна обслуживания. При ошибке сохраняются данные и журнал; повторите ту же операцию. Автоматический откат БД не выполняется.'),wraplength=1000).pack(anchor='w')
-        fresh=example();fresh['install_ai']=False;fresh['hosts']['ai']['address']=''
-        self.populate(fresh); root.after(100,self.poll);root.protocol('WM_DELETE_WINDOW',self.close)
-        self.log(tr('Журнал этого запуска: ')+str(self.session_log.path))
-        saved=self.directory/'site.json'
-        if saved.exists():
-            try:
-                self.populate(runtime_config(saved))
-                self.log(tr('Загружена сохранённая конфигурация: ')+str(saved))
-            except Exception as e:self.log(tr('Не удалось загрузить сохранённую конфигурацию: ')+str(e))
+class Actions:
 
     def change_language(self,event=None):
         if self.busy:
@@ -225,26 +97,6 @@ class App:
         set_language(chosen);localize(self.root)
         atomic_json(data_directory(self.home)/'ui.json',{'language':chosen})
 
-    def render_servers(self):
-        for widget in self.hostframe.winfo_children():widget.destroy()
-        headings=['VM','IPv4',tr('SSH порт'),tr('SSH пользователь'),tr('Вход'),tr('Путь к SSH-ключу'),'','']
-        for col,title in enumerate(headings):ttk.Label(self.hostframe,text=title,font=('Segoe UI',9,'bold')).grid(row=0,column=col,sticky='w')
-        active=('app','db','ai')+self.visible_workers()
-        self.ai_widgets=[]
-        for row,role in enumerate(active,1):
-            if role not in self.hostvars:
-                defaults={'address':'','port':'22','username':'Administrator' if role.startswith('worker') else 'ubuntu','auth':'key','key_path':'','fingerprint':''}
-                self.hostvars[role]={k:tk.StringVar(value=v) for k,v in defaults.items()}
-            v=self.hostvars[role]
-            ttk.Label(self.hostframe,text=role.upper()).grid(row=row,column=0,sticky='w')
-            for col,key,width in ((1,'address',16),(2,'port',7),(3,'username',17),(5,'key_path',29)):
-                ttk.Entry(self.hostframe,textvariable=v[key],width=width).grid(row=row,column=col,padx=3,pady=8,sticky='ew')
-            ttk.Combobox(self.hostframe,textvariable=v['auth'],values=['key','password'],state='readonly',width=9).grid(row=row,column=4,padx=3)
-            ttk.Button(self.hostframe,text='…',width=3,command=lambda r=role:self.pick_key(r)).grid(row=row,column=6)
-            ttk.Button(self.hostframe,text=tr('Пароли / ключ сервера'),command=lambda r=role:self.credentials(r)).grid(row=row,column=7,padx=6)
-            if role=='ai':self.ai_widgets=list(self.hostframe.grid_slaves(row=row))
-        self.hostframe.columnconfigure(5,weight=1)
-        self.toggle_ai()
 
     def visible_workers(self):
         original=worker_roles(getattr(self,'original_config',example()))
@@ -256,11 +108,6 @@ class App:
             if role not in selected:selected.append(role)
         return tuple(sorted(selected,key=lambda r:int(r[6:])))
 
-    def toggle_ai(self):
-        for widget in self.ai_widgets+[getattr(self,name,None) for name in ('ai_model_entry','ai_model_button','ai_ollama_entry','ai_ollama_button')]:
-            if widget is None:continue
-            if isinstance(widget,ttk.Combobox):widget.configure(state='readonly' if self.install_ai.get() else 'disabled')
-            else:widget.configure(state='normal' if self.install_ai.get() else 'disabled')
 
     def populate(self,c):
         self.original_config=dict(c)
@@ -314,54 +161,6 @@ class App:
         path=filedialog.askopenfilename(title='SSH private key')
         if path:self.hostvars[r]['key_path'].set(path)
 
-    def credentials(self,r):
-        if self.busy:return
-        top=tk.Toplevel(self.root);top.title(r+' — SSH');top.transient(self.root);top.grab_set()
-        f=ttk.Frame(top,padding=20);f.pack(fill='both',expand=True);fields={}
-        for i,(key,label) in enumerate([('password',tr('Пароль SSH')),('passphrase',tr('Пароль SSH-ключа')),('sudo_password',tr('Пароль sudo (Linux)'))]):
-            ttk.Label(f,text=label).grid(row=i,column=0,sticky='w');fields[key]=tk.StringVar(value=self.auth.get(r,{}).get(key,''));ttk.Entry(f,textvariable=fields[key],show='•',width=40).grid(row=i,column=1,pady=5)
-        ttk.Label(f,text=tr('Доверенный ключ сервера SHA256:')).grid(row=3,column=0,columnspan=2,sticky='w',pady=(16,4))
-        ttk.Entry(f,textvariable=self.hostvars[r]['fingerprint'],width=65).grid(row=4,column=0,columnspan=2)
-        feedback=tk.StringVar(value=tr('Проверяется только выбранная VM. Пароль для получения отпечатка не нужен.'))
-        ttk.Label(f,textvariable=feedback,wraplength=560).grid(row=6,column=0,columnspan=2,sticky='w',pady=8)
-        pending=queue.Queue();cancel=threading.Event();scanning=[False]
-        def finish():
-            scanning[0]=False;get_button.config(state='normal');save_button.config(state='normal')
-        def poll_scan(h):
-            if not top.winfo_exists():return
-            while not pending.empty():
-                kind,value=pending.get()
-                if kind=='progress':feedback.set(value)
-                elif kind=='error':
-                    finish();feedback.set(value);messagebox.showerror(tr('Диагностика SSH'),value,parent=top)
-                elif kind=='result':
-                    finish()
-                    if messagebox.askyesno(tr('Сверка SSH ключа'),tr('Сервер {v0}:{v1}\n\n{v2}\n\nСверьте этот отпечаток через консоль VM или с администратором. Он совпадает?').format(v0=h['address'],v1=h['port'],v2=value),parent=top):
-                        self.hostvars[r]['fingerprint'].set(value)
-                        feedback.set(tr('Отпечаток подтверждён. Сохраните окно и конфигурацию площадки.'))
-                    else:feedback.set(tr('Отпечаток не подтверждён; доверенный ключ не изменён.'))
-            if scanning[0]:self.root.after(100,lambda:poll_scan(h))
-        def retrieve():
-            if scanning[0]:return
-            try:
-                h={'address':str(ipaddress.IPv4Address(self.hostvars[r]['address'].get().strip())),
-                   'port':int(self.hostvars[r]['port'].get())}
-                if not 1<=h['port']<=65535:raise ValueError(tr('SSH порт должен быть от 1 до 65535'))
-                cancel.clear();scanning[0]=True;get_button.config(state='disabled');save_button.config(state='disabled')
-                feedback.set(tr('Подключение к {v0}:{v1}…').format(v0=h['address'],v1=h['port']))
-                def worker():
-                    try:pending.put(('result',scan(h,progress=lambda s:pending.put(('progress',s)),cancel=cancel)))
-                    except Exception as e:pending.put(('error',str(e)))
-                threading.Thread(target=worker,daemon=True).start()
-                self.root.after(100,lambda:poll_scan(h))
-            except Exception as e:messagebox.showerror('SSH',str(e),parent=top)
-        get_button=ttk.Button(f,text=tr('Получить отпечаток без отправки пароля'),command=retrieve)
-        get_button.grid(row=5,column=0,columnspan=2,pady=10)
-        def done(): self.auth[r]={k:v.get() for k,v in fields.items()};top.destroy()
-        save_button=ttk.Button(f,text=tr('Использовать эти данные'),command=done)
-        save_button.grid(row=7,column=0,columnspan=2)
-        def close():cancel.set();top.destroy()
-        top.protocol('WM_DELETE_WINDOW',close)
 
     def pick_directory(self):
         if self.busy:return
@@ -445,26 +244,26 @@ class App:
 
     def certificate_form(self,frame):
         ttk.Label(frame,text=tr('Сертификат организации для сайта ProdCast'),font=('Segoe UI',14,'bold')).grid(row=0,column=0,columnspan=3,sticky='w',pady=10)
-        ttk.Label(frame,text=tr('Выберите PFX/P12, содержащий серверный сертификат и приватный ключ. Пароль PFX нужен только для открытия файла.\nДля существующей площадки внутренний HTTPS адрес на вкладке «Площадка» менять не нужно.'),wraplength=970).grid(row=1,column=0,columnspan=3,sticky='w',pady=8)
+        ttk.Label(frame,text=tr('Выберите PFX/P12, содержащий серверный сертификат и приватный ключ. Пароль PFX нужен только для открытия файла.\nДля существующей площадки внутренний HTTPS адрес на вкладке «Площадка» менять не нужно.'),wraplength=680).grid(row=1,column=0,columnspan=3,sticky='w',pady=8)
         self.pfx_path=tk.StringVar();self.pfx_password=tk.StringVar();self.pfx_url=tk.StringVar();self.pfx_ca=tk.StringVar()
         for row,label,var,hidden in [(2,tr('Адрес сайта клиента (https://имя)'),self.pfx_url,False),(3,tr('PFX / P12 файл'),self.pfx_path,False),(4,tr('Пароль PFX'),self.pfx_password,True),(5,tr('Цепочка CA в PEM (если нет в PFX)'),self.pfx_ca,False)]:
             ttk.Label(frame,text=label).grid(row=row,column=0,sticky='w',pady=6)
-            ttk.Entry(frame,textvariable=var,show='•' if hidden else '',width=65).grid(row=row,column=1,sticky='ew',padx=8)
+            ttk.Entry(frame,textvariable=var,show='•' if hidden else '',width=30).grid(row=row,column=1,sticky='ew',padx=8)
         def choose(var,types):
             if self.busy:return
             value=filedialog.askopenfilename(filetypes=types)
             if value:var.set(value)
         ttk.Button(frame,text=tr('Выбрать…'),command=lambda:choose(self.pfx_path,[('PKCS#12','*.pfx *.p12')])).grid(row=3,column=2)
         ttk.Button(frame,text=tr('Выбрать…'),command=lambda:choose(self.pfx_ca,[('PEM certificates','*.pem *.crt'),(tr('Все файлы'),'*.*')])).grid(row=5,column=2)
-        ttk.Label(frame,text=tr('Ключ из PFX сохраняется в данных площадки автоматически. Пароль старого vault нужен только при первом импорте.\nПереносите всю папку Manager; она содержит доступ к серверам. Приватный ключ CA организации не требуется.'),wraplength=970).grid(row=6,column=0,columnspan=3,sticky='w',pady=12)
+        ttk.Label(frame,text=tr('Ключ из PFX сохраняется в данных площадки автоматически. Пароль старого vault нужен только при первом импорте.\nПереносите всю папку Manager; она содержит доступ к серверам. Приватный ключ CA организации не требуется.'),wraplength=680).grid(row=6,column=0,columnspan=3,sticky='w',pady=12)
         bar=ttk.Frame(frame);bar.grid(row=7,column=0,columnspan=3,sticky='w')
         ttk.Button(bar,text=tr('Проверить PFX'),command=lambda:self.import_pfx(False)).pack(side='left',padx=3)
         ttk.Button(bar,text=tr('Сохранить сертификат'),command=lambda:self.import_pfx(True)).pack(side='left',padx=3)
         ttk.Button(bar,text=tr('Показать сохранённый сертификат'),command=self.load_certificate_info).pack(side='left',padx=3)
         ttk.Button(frame,text=tr('Применить сертификат на App'),command=lambda:self.start('app-tls')).grid(row=8,column=0,columnspan=3,sticky='w',pady=12)
         self.certificate_info=tk.StringVar(value=tr('Сертификат организации ещё не загружен из vault.'))
-        ttk.Label(frame,textvariable=self.certificate_info,wraplength=970).grid(row=9,column=0,columnspan=3,sticky='w',pady=10)
-        ttk.Label(frame,text=tr('Импорт сохраняет сертификат локально. «Применить» подключается только к App и перезапускает веб-сервисы — нужно окно обслуживания.\nПри первой установке и последующих обновлениях сохранённый сертификат применяется автоматически.\nDNS клиента должен указывать имя сайта на IP App. ПК пользователей должны доверять CA организации. Автопродление PFX не выполняется.'),wraplength=970).grid(row=10,column=0,columnspan=3,sticky='w',pady=10)
+        ttk.Label(frame,textvariable=self.certificate_info,wraplength=680).grid(row=9,column=0,columnspan=3,sticky='w',pady=10)
+        ttk.Label(frame,text=tr('Импорт сохраняет сертификат локально. «Применить» подключается только к App и перезапускает веб-сервисы — нужно окно обслуживания.\nПри первой установке и последующих обновлениях сохранённый сертификат применяется автоматически.\nDNS клиента должен указывать имя сайта на IP App. ПК пользователей должны доверять CA организации. Автопродление PFX не выполняется.'),wraplength=680).grid(row=10,column=0,columnspan=3,sticky='w',pady=10)
         frame.columnconfigure(1,weight=1)
 
     def show_certificate(self,material,prefix=None):
@@ -552,9 +351,10 @@ class App:
                 try:
                     release=Release(release_path,directory/'cache',trusted,validate_ai=False,model_path=model_path,ollama_path=ollama_path) if mode in ('install','update','repair','ai') else None
                     Engine(c,v,release,directory,self.log,diagnostics=self.session_log).run(mode)
+                    self.record_applied(mode,c,v,release,directory)
                 except Exception as e:self.log(tr('ОШИБКА: ')+str(e))
                 finally:self.events.put(('done',''))
-            threading.Thread(target=task,daemon=False).start()
+            self.launch_operation(mode,task)
         except Exception as e:messagebox.showerror(tr('Проверка'),str(e))
 
     def worker_action(self,mode):
@@ -580,7 +380,7 @@ class App:
                     self.events.put(('profile',saved))
                 except Exception as e:self.log(tr('ОШИБКА: ')+str(e))
                 finally:self.events.put(('done',''))
-            threading.Thread(target=task,daemon=False).start()
+            self.launch_operation(mode,task)
         except Exception as e:messagebox.showerror(tr('Выбранный Worker'),str(e))
 
     def add_workers(self):
@@ -609,7 +409,7 @@ class App:
                     self.events.put(('profile',saved))
                 except Exception as e:self.log(tr('ОШИБКА: ')+str(e))
                 finally:self.events.put(('done',''))
-            threading.Thread(target=task,daemon=False).start()
+            self.launch_operation('add-workers',task)
         except Exception as e:messagebox.showerror(tr('Добавить Workers…'),str(e))
 
     def stop_previous(self):
@@ -624,7 +424,7 @@ class App:
                     self.log(tr('Готово: ')+str(result.get('status','stopped')))
                 except Exception as e:self.log(tr('ОШИБКА: ')+str(e))
                 finally:self.events.put(('done',''))
-            threading.Thread(target=task,daemon=False).start()
+            self.launch_operation('stop',task)
         except Exception as e:messagebox.showerror(tr('Проверка'),str(e))
 
     def reset_dialog(self):
@@ -676,7 +476,7 @@ class App:
                 try:Maintenance(Engine(c,v,None,directory,self.log,diagnostics=self.session_log)).run(mode,path,password)
                 except Exception as e:self.log(tr('ОШИБКА: ')+str(e))
                 finally:self.events.put(('done',''))
-            threading.Thread(target=task,daemon=False).start()
+            self.launch_operation(mode,task)
         except Exception as e:messagebox.showerror(tr('Проверка'),str(e))
 
     def poll(self):
@@ -690,6 +490,14 @@ class App:
     def close(self):
         if self.busy:messagebox.showinfo(tr('Операция выполняется'),tr('Дождитесь завершения текущего шага. Отключение SSH может оставить операцию незавершённой.'));return
         self.root.destroy()
+
+from .workspace import Workspace
+
+
+class App(Workspace, Actions):
+    def __init__(self, root, log_dir=None, app_home=None):
+        self.build_workspace(root, log_dir, app_home, application_directory)
+
 
 def main():
     root=tk.Tk()

@@ -85,7 +85,7 @@ def test_gui_scan_runs_in_background_and_needs_confirmation(monkeypatch,confirm,
     def fake_scan(host,progress,cancel):
         assert host=={'address':'10.20.30.23','port':22}
         entered.set();progress('TCP доступен');release.wait(3);return expected
-    monkeypatch.setattr(gui,'scan',fake_scan)
+    monkeypatch.setattr('prodcast_manager.ssh.scan',fake_scan)
     monkeypatch.setattr(gui.messagebox,'askyesno',lambda *a,**k:confirm)
     def fail(*a,**k):raise AssertionError(str(a))
     monkeypatch.setattr(gui.messagebox,'showerror',fail)
@@ -94,14 +94,15 @@ def test_gui_scan_runs_in_background_and_needs_confirmation(monkeypatch,confirm,
     try:
         app.hostvars['app']['address'].set('10.20.30.23')
         app.hostvars['db']['address'].set('other VM still unconfigured')
-        app.credentials('app');root.update()
-        button=next(w for w in descendants(root) if isinstance(w,gui.ttk.Button) and w.cget('text')=='Получить отпечаток без отправки пароля')
-        started=time.monotonic();button.invoke()
+        started=time.monotonic();app.credentials('app');root.update()
         assert time.monotonic()-started<.3 and entered.wait(1)
         assert app.hostvars['app']['fingerprint'].get()==''
-        root.update();assert button.instate(['disabled'])
         release.set();deadline=time.monotonic()+3
-        while button.instate(['disabled']) and time.monotonic()<deadline:root.update();time.sleep(.02)
-        assert not button.instate(['disabled'])
+        def trust_button():
+            return next((w for w in descendants(root) if isinstance(w,gui.ttk.Button) and w.cget('text')=='Сверено — доверять этому отпечатку'),None)
+        while trust_button() is None and time.monotonic()<deadline:root.update();time.sleep(.02)
+        assert trust_button() is not None
+        assert app.hostvars['app']['fingerprint'].get()==''
+        if confirm:trust_button().invoke()
         assert app.hostvars['app']['fingerprint'].get()==(expected if confirm else '')
     finally:release.set();root.destroy()

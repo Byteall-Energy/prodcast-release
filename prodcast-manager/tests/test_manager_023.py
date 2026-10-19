@@ -124,10 +124,8 @@ def test_gui_language_dynamic_workers_and_optional_ai_preserve_input(tmp_path):
     try:
         app=App(root,log_dir=tmp_path/'logs',app_home=tmp_path/'manager')
         assert app.config()['hosts']['ai']['address']=='' and app.config()['install_ai'] is False
-        assert all(str(w.cget('state'))=='disabled' for w in app.ai_widgets)
-        assert str(app.ai_model_entry.cget('state'))=='disabled'
-        assert str(app.ai_model_button.cget('state'))=='disabled'
-        assert str(app.ai_ollama_entry.cget('state'))=='disabled'
+        # AI package selection is now independent from including AI in the site.
+        assert 'ai' in app.pages and app.ai_update.get()=='keep'
         app.ai_ollama.set('C:/offline/ollama.zip')
         app.ai_model.set('C:/offline/model.gguf')
         app.worker_count.set('3');app.hostvars['worker3']['address'].set('192.168.31.153')
@@ -136,14 +134,11 @@ def test_gui_language_dynamic_workers_and_optional_ai_preserve_input(tmp_path):
         app.worker_count.set('3');assert app.hostvars['worker3']['address'].get()=='192.168.31.153'
         app.language_choice.set('English');app.change_language()
         content=texts(root)
-        assert 'Install AI' in content and '4. Installation and updates' in content and 'Repair' in content
+        assert 'Include AI in this site' in content and 'Install / update' in content and 'Operations' in content
         assert not any(re.search('[А-Яа-я]',s) for s in content if s!='Language / Язык')
         assert app.hostvars['worker3']['address'].get()=='192.168.31.153'
         assert json.loads((tmp_path/'manager/prodcast-data/ui.json').read_text())['language']=='en'
         app.install_ai.set(True)
-        assert all(str(w.cget('state')) in ('normal','readonly') for w in app.ai_widgets)
-        assert str(app.ai_model_entry.cget('state'))=='normal'
-        assert str(app.ai_ollama_button.cget('state'))=='normal'
         assert app.ai_ollama.get()=='C:/offline/ollama.zip'
         assert app.ai_model.get()=='C:/offline/model.gguf'
         assert not any('v0.2' in s for s in texts(root))
@@ -151,7 +146,7 @@ def test_gui_language_dynamic_workers_and_optional_ai_preserve_input(tmp_path):
         dialog=ActivationDialog(root,'00000000-0000-0000-0000-000000000001',{},'company',lambda v:None)
         assert dialog.title()=='App activation connection';dialog.destroy()
         app.language_choice.set('Русский');app.change_language()
-        assert 'Установить AI' in texts(root) and 'Восстановить' in texts(root)
+        assert 'Включить AI в этой площадке' in texts(root) and 'Операции' in texts(root)
         assert not hasattr(app,'gpu')
         app.populate(example());app.worker_count.set('3')
         assert app.hostvars['worker3']['address'].get()==''

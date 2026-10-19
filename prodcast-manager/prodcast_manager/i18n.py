@@ -73,7 +73,10 @@ def localize(root):
             for i in range((end+1) if end is not None else 0):
                 if widget.type(i) not in ('separator','tearoff'):
                     widget.entryconfigure(i,label=rendered(widget.entrycget(i,'label')))
-        if isinstance(widget,(ttk.Label,ttk.Button,ttk.Checkbutton,tk.Label,tk.Button)):
+        if isinstance(widget,ttk.LabelFrame):widget.configure(text=rendered(widget.cget('text')))
+        if isinstance(widget,ttk.Treeview):
+            for column in ('#0',*widget['columns']):widget.heading(column,text=rendered(widget.heading(column,'text')))
+        if isinstance(widget,(ttk.Label,ttk.Button,ttk.Checkbutton,ttk.Radiobutton,tk.Label,tk.Button)):
             variable=widget.cget('textvariable')
             if variable:widget.setvar(variable,rendered(str(widget.getvar(variable))))
             else:widget.configure(text=rendered(widget.cget('text')))

@@ -31,58 +31,8 @@ NOTICE = 'Настройки применяются при установке и
 class DirectoryDialog(tk.Toplevel):
     def __init__(self, parent, saved, on_save, on_probe, on_busy=lambda value: None):
         super().__init__(parent)
-        self.title(tr('LDAP / Active Directory'))
-        self.transient(parent); self.resizable(True, False)
-        self.on_save=on_save; self.on_probe=on_probe; self.on_busy=on_busy
-        self.busy=False; self.events=queue.Queue(); self.ca=saved.get('ca_pem','')
-        self.protocol('WM_DELETE_WINDOW', self.close)
-        frame=ttk.Frame(self,padding=16);frame.pack(fill='both',expand=True);frame.columnconfigure(1,weight=1)
-        ttk.Label(frame,text=tr(NOTICE),wraplength=780).grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,12))
-        self.enabled=tk.BooleanVar(value=saved.get('enabled',False))
-        ttk.Checkbutton(frame,text=tr('Включить доменный вход в App'),variable=self.enabled).grid(row=1,column=0,columnspan=3,sticky='w',pady=8)
-        self.lookup=tk.StringVar(value=saved.get('user_search_attribute','userPrincipalName'))
-        ttk.Label(frame,text=tr('Поиск пользователя в AD')).grid(row=8,column=0,sticky='w')
-        ttk.Combobox(frame,textvariable=self.lookup,values=('userPrincipalName','sAMAccountName'),state='readonly').grid(row=8,column=1,sticky='ew')
-        self.values={};self.inputs=[]
-        fields=[('url','Адрес LDAP / LDAPS','ldaps://dc01.example.com:636'),
-                ('domain','Домен пользователей','example.com'),
-                ('base_dn','Base DN поиска','DC=example,DC=com'),
-                ('group_dn','DN группы допуска','CN=ProdCast-Users,OU=Groups,DC=example,DC=com'),
-                ('bind_dn','Служебная учётная запись (UPN / DN)','svc-prodcast@example.com'),
-                ('bind_password','Пароль служебной учётной записи','')]
-        for row,(key,label,example) in enumerate(fields,2):
-            self.values[key]=tk.StringVar(value=saved.get(key,''))
-            ttk.Label(frame,text=tr(label)).grid(row=row,column=0,sticky='w',padx=(0,10),pady=4)
-            entry=ttk.Entry(frame,textvariable=self.values[key],width=64,show='*' if key=='bind_password' else '')
-            entry.grid(row=row,column=1,columnspan=2,sticky='ew');self.inputs.append(entry)
-        ttk.Label(frame,text=tr('Пример: ldaps://dc01.example.com:636; Base DN: DC=example,DC=com.\nСлужебной учётной записи достаточно прав чтения пользователей и групп.'),wraplength=780).grid(row=9,column=0,columnspan=3,sticky='w',pady=8)
-        ca_bar=ttk.Frame(frame);ca_bar.grid(row=10,column=0,columnspan=3,sticky='w')
-        self.add_button(ca_bar,'Загрузить CA (.cer / .crt / .pem)…',self.pick_ca)
-        self.add_button(ca_bar,'Использовать системные CA',self.clear_ca)
-        self.ca_status=tk.StringVar();self.update_ca_status()
-        self.values['url'].trace_add('write',lambda *args:self.update_ca_status())
-        ttk.Label(frame,textvariable=self.ca_status,wraplength=780).grid(row=11,column=0,columnspan=3,sticky='w',pady=4)
-        bar=ttk.Frame(frame);bar.grid(row=12,column=0,columnspan=3,sticky='w',pady=8)
-        self.add_button(bar,'Проверить LDAP / LDAPS с App VM',lambda:self.probe('connection'))
-        self.add_button(bar,'Проверить учётную запись и группу',lambda:self.probe('directory'))
-        ttk.Separator(frame).grid(row=13,column=0,columnspan=3,sticky='ew',pady=8)
-        self.test_user=tk.StringVar();self.test_password=tk.StringVar()
-        for row,label,var in [(14,'Пробный пользователь (логин / UPN)',self.test_user),(15,'Пароль пробного пользователя',self.test_password)]:
-            ttk.Label(frame,text=tr(label)).grid(row=row,column=0,sticky='w')
-            entry=ttk.Entry(frame,textvariable=var,show='*' if row==15 else '',width=64)
-            entry.grid(row=row,column=1,columnspan=2,sticky='ew',pady=4);self.inputs.append(entry)
-        bar=ttk.Frame(frame);bar.grid(row=16,column=0,columnspan=3,sticky='w',pady=8)
-        self.add_button(bar,'Проверить пользователя и допуск',lambda:self.probe('user'))
-        ttk.Label(frame,text=tr('Пробный пароль не сохраняется. Не повторяйте неверный пароль: AD может заблокировать учётную запись.'),wraplength=780).grid(row=17,column=0,columnspan=3,sticky='w')
-        self.status=tk.StringVar(value=tr('Настройки сохраняются только в защищённых данных площадки Manager.'))
-        ttk.Label(frame,textvariable=self.status,wraplength=780).grid(row=18,column=0,columnspan=3,sticky='w',pady=12)
-        bar=ttk.Frame(frame);bar.grid(row=19,column=0,columnspan=3,sticky='e')
-        self.add_button(bar,'Сохранить настройки LDAP',self.save)
-        self.add_button(bar,'Закрыть',self.close)
-        self.allow_plain_ldap=tk.BooleanVar(value=saved.get('allow_plain_ldap',False))
-        warning=ttk.Checkbutton(frame,text=tr('Разрешить ldap:// без TLS: пароли передаются без шифрования (не рекомендуется)'),variable=self.allow_plain_ldap)
-        warning.grid(row=20,column=0,columnspan=3,sticky='w',pady=8);self.inputs.append(warning)
-        self.timer=self.after(100,self.poll);self.grab_set()
+        from .directory_form import build
+        build(self, parent, saved, on_save, on_probe, on_busy)
 
     def add_button(self,parent,label,command):
         button=ttk.Button(parent,text=tr(label),command=command);button.pack(side='left',padx=3);self.inputs.append(button)
@@ -120,6 +70,8 @@ class DirectoryDialog(tk.Toplevel):
             value=self.value(mode=='connection');user=self.test_user.get().strip();password=self.test_password.get() if mode=='user' else ''
             if mode=='user' and (not user or not password):raise ValueError(tr('Введите логин и пароль для пробного входа.'))
             self.test_password.set('');self.busy=True;self.on_busy(True)
+            self.probe_mode=mode
+            self.input_states={widget:str(widget.cget('state')) for widget in self.inputs}
             for widget in self.inputs:widget.configure(state='disabled')
             self.status.set(tr('Проверка выполняется с App VM. Приложение и Active Directory не изменяются.'))
             def task():
@@ -131,7 +83,7 @@ class DirectoryDialog(tk.Toplevel):
     def poll(self):
         try:
             result=self.events.get_nowait();self.busy=False;self.on_busy(False)
-            for widget in self.inputs:widget.configure(state='normal')
+            for widget in self.inputs:widget.configure(state=getattr(self,'input_states',{}).get(widget,'normal'))
             if result['ok']:
                 text='LDAPS: сертификат и соединение проверены с App VM.'
                 if result.get('group_found'):text='LDAPS: служебный вход, Base DN и группа допуска проверены.'
@@ -143,6 +95,8 @@ class DirectoryDialog(tk.Toplevel):
                     self.status.set(tr(text)+'\n'+tr('Предупреждение: соединение LDAP не зашифровано; сертификат не проверяется.'))
                 else:self.status.set(tr(text))
             else:self.status.set(tr(ERRORS.get(result.get('code'),'Ошибка проверки SSH/LDAP. Проверьте SSH-отпечаток, доступ к App VM и настройки LDAP.')))
+            if hasattr(self,'test_results'):
+                self.test_results[self.probe_mode].set(self.status.get())
         except queue.Empty:pass
         self.timer=self.after(100,self.poll)
 
