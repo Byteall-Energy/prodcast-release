@@ -216,6 +216,7 @@ def test_gui_pfx_import_and_reopen_without_password_persistence(tmp_path,monkeyp
     pfx=tmp_path/'customer.pfx';pfx.write_bytes(pack())
     root=tk.Tk();root.withdraw();app=App(root,log_dir=tmp_path/'logs',app_home=tmp_path/'manager')
     try:
+        app.populate(example())
         app.directory=tmp_path/'site';app.master.set('long enough master password')
         app.pfx_path.set(str(pfx));app.pfx_password.set(PASSWORD);app.pfx_url.set(URL)
         errors=[];monkeypatch.setattr('prodcast_manager.gui.messagebox.showerror',lambda *a:errors.append(a))

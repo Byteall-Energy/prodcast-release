@@ -31,6 +31,8 @@ NOTICE = 'Настройки применяются при установке и
 class DirectoryDialog(tk.Toplevel):
     def __init__(self, parent, saved, on_save, on_probe, on_busy=lambda value: None):
         super().__init__(parent)
+        from .ui_controls import apply_branding
+        apply_branding(self)
         from .directory_form import build
         build(self, parent, saved, on_save, on_probe, on_busy)
 

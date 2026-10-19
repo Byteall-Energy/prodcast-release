@@ -5,11 +5,13 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from .activation import validate_activation
+from .ui_controls import apply_branding
 
 
 class ActivationDialog(tk.Toplevel):
     def __init__(self, parent, identity, saved, tenant, on_save):
         super().__init__(parent)
+        apply_branding(self)
         self.title(tr('Подключение активации App'))
         self.transient(parent)
         self.identity=identity;self.on_save=on_save
@@ -51,6 +53,7 @@ class ActivationDialog(tk.Toplevel):
 
     def show_identity(self):
         top=tk.Toplevel(self);top.title(tr('ID установки — только чтение'));top.transient(self)
+        apply_branding(top)
         ttk.Label(top,text=tr('Справочный ID для администратора сервера лицензий.'),padding=12).pack()
         entry=ttk.Entry(top,width=48);entry.insert(0,self.identity);entry.configure(state='readonly');entry.pack(padx=12,pady=6)
         def copy():top.clipboard_clear();top.clipboard_append(self.identity)

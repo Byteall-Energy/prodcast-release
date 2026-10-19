@@ -16,6 +16,7 @@ from .i18n import tr, EN, language, set_language, localize
 from .portable import data_directory, last_directory, runtime_config, remember
 from .session_logs import SessionLog
 from .operation_history import OperationHistory, pending_operations, filtered_events, target_of
+from .ui_controls import ExampleEntry, apply_branding, fresh_site
 
 
 def label(en, ru):
@@ -73,10 +74,7 @@ class Workspace:
         set_language(chosen if chosen in ('ru', 'en') else 'ru')
         self.root.title('ProdCast Manager ' + __version__)
         root.geometry('1180x850'); root.minsize(920, 650)
-        icon = Path(__file__).parent / 'resources/prodcast-manager.ico'
-        if icon.exists():
-            try: root.iconbitmap(str(icon))
-            except tk.TclError: pass
+        apply_branding(root, default=True)
         style = ttk.Style(); style.theme_use('clam')
         style.configure('TButton', padding=7)
         style.configure('Heading.TLabel', font=('Segoe UI', 18, 'bold'))
@@ -142,7 +140,7 @@ class Workspace:
         self.build_overview(); self.build_servers(); self.build_deploy()
         self.build_ai(); self.build_settings(); self.build_backups(); self.build_operations()
         self.dirlabel = ttk.Label(shell, wraplength=1100); self.dirlabel.pack(anchor='w')
-        fresh = example(); fresh['install_ai'] = False; fresh['hosts']['ai']['address'] = ''
+        fresh = fresh_site()
         self.populate(fresh)
         saved = self.directory / 'site.json'
         if saved.exists():
@@ -162,11 +160,11 @@ class Workspace:
         ttk.Label(parent, text=label(en, ru), style='Heading.TLabel').pack(anchor='w', pady=(0, 8))
         if detail: ttk.Label(parent, text=detail, wraplength=820).pack(anchor='w', pady=(0, 10))
 
-    def field(self, parent, en, ru, variable, secret=False, browse=None):
+    def field(self, parent, en, ru, variable, secret=False, browse=None, example_hint=None):
         group = ttk.Frame(parent); group.pack(fill='x', pady=5)
         ttk.Label(group, text=label(en, ru)).pack(anchor='w')
         line = ttk.Frame(group); line.pack(fill='x')
-        entry = ttk.Entry(line, textvariable=variable, show='•' if secret else '')
+        entry = ExampleEntry(line, textvariable=variable, example=example_hint) if example_hint else ttk.Entry(line, textvariable=variable, show='•' if secret else '')
         entry.pack(side='left', fill='x', expand=True); self.editors.append(entry)
         if secret:
             show = tk.BooleanVar(value=False)
@@ -310,7 +308,8 @@ class Workspace:
         p = self.connection_editor; v = self.hostvars[role]
         self._editor_loading = True
         ttk.Label(p, text=role.upper()).pack(anchor='w')
-        self.field(p, 'Server IPv4 (numeric address)', 'IPv4 сервера (числовой адрес)', v['address'])
+        number = {'app':10,'db':11,'ai':12}.get(role, 20 + int(role[6:]) if role.startswith('worker') else 10)
+        self.field(p, 'Server IPv4 (numeric address)', 'IPv4 сервера (числовой адрес)', v['address'], example_hint='192.0.2.' + str(number))
         self.field(p, 'SSH port', 'Порт SSH', v['port'])
         self.field(p, 'SSH username', 'Пользователь SSH', v['username'])
         ttk.Label(p, text=label('Sign-in method', 'Способ входа')).pack(anchor='w')
@@ -375,6 +374,10 @@ class Workspace:
         self.capture_access()
         if self.editor_role and not self.editor_role.startswith('worker') and self.sudo_mode.get() == 'root' and self.hostvars[self.editor_role]['username'].get() != 'root':
             raise ValueError(label('Root privileges require SSH username root. Otherwise choose a sudo mode.', 'Для root укажите SSH-пользователя root. Иначе выберите режим sudo.'))
+        active = ('app','db') + self.visible_workers() + (('ai',) if self.install_ai.get() else ())
+        for role in active:
+            if not self.hostvars[role]['address'].get().strip():
+                raise ValueError(role + ': ' + label('Enter the actual server IPv4. Grey text is only an example.', 'Введите реальный IPv4 сервера. Серый текст — только пример.'))
         return super().config()
 
     def prepare_profile(self):
@@ -402,6 +405,7 @@ class Workspace:
         except ValueError as exc:
             messagebox.showerror('SSH', str(exc)); return
         top = tk.Toplevel(self.root); top.title(role + ' — ' + label('Server identity', 'Подлинность сервера')); top.transient(self.root)
+        apply_branding(top)
         frame = ttk.Frame(top, padding=16); frame.pack(fill='both', expand=True)
         status = tk.StringVar(value=label('Retrieving fingerprint without sending credentials…', 'Получение отпечатка без отправки пароля…'))
         ttk.Label(frame, textvariable=status, wraplength=680).pack(anchor='w')
@@ -587,7 +591,9 @@ class Workspace:
         for frame, en, ru in [(general, 'General & network', 'Основные и сеть'), (https, 'HTTPS certificate', 'Сертификат HTTPS'), (integrations, 'Domain login & activation', 'Доменный вход и активация')]: notebook.add(frame, text=label(en, ru))
         for key, en, ru in [('public_url', 'Internal App HTTPS URL (browser URL is in certificate settings)', 'Внутренний HTTPS App (адрес сайта — в сертификате)'),
                             ('admin_username', 'Initial App administrator username', 'Начальный логин администратора App'), ('admin_email', 'Administrator email', 'Email администратора'),
-                            ('admin_ip', 'Management PC IPv4 used for access rules', 'IPv4 ПК управления для правил доступа'), ('app_subnet', 'Docker network /24 (must not overlap VMs)', 'Подсеть Docker /24 (без пересечения с VM)')]: self.field(general, en, ru, self.vars[key])
+                            ('admin_ip', 'Management PC IPv4 used for access rules', 'IPv4 ПК управления для правил доступа'), ('app_subnet', 'Docker network /24 (must not overlap VMs)', 'Подсеть Docker /24 (без пересечения с VM)')]:
+            hints = {'public_url':'https://prodcast.example.com', 'admin_ip':'192.0.2.100'}
+            self.field(general, en, ru, self.vars[key], example_hint=hints.get(key))
         ttk.Label(general, text=label('Initial administrator settings do not edit an existing App account. Core VM addresses and site identity must not be casually changed.', 'Начальные параметры администратора не изменяют существующий аккаунт App. Сохраняйте исходные адреса основных VM и ID площадки.'), wraplength=760).pack(anchor='w', pady=8)
         ttk.Button(general, text=label('Save local configuration', 'Сохранить локальную конфигурацию'), command=self.save).pack(anchor='w', pady=5)
         self.certificate_form(https)
@@ -661,6 +667,7 @@ class Workspace:
         from .config import validate
         import uuid
         top = tk.Toplevel(self.root)
+        apply_branding(top)
         title = label('Recover Manager profile', 'Восстановить профиль Manager') if mode == 'import' else label(*MODE_NAMES[mode])
         top.title(title); top.transient(self.root)
         frame = ttk.Frame(top, padding=18); frame.pack(fill='both', expand=True)
@@ -746,6 +753,7 @@ class Workspace:
     def recovery_options(self):
         pending = pending_operations(self.directory)
         top = tk.Toplevel(self.root); top.title(label('Pending operations', 'Незавершённые операции')); top.transient(self.root)
+        apply_branding(top)
         frame = ttk.Frame(top, padding=18); frame.pack(fill='both', expand=True)
         advice = {'journal.json': label('Repeat the same install/update with its original release.', 'Повторите исходную установку/обновление с исходным релизом.'),
                   'ai-journal.json': label('Retry AI with its required packages, or use stop below.', 'Повторите AI с нужными пакетами либо используйте остановку ниже.'),
@@ -958,6 +966,7 @@ class Workspace:
 
     def worker_prerequisites(self, mode):
         top = tk.Toplevel(self.root); top.title(label('Worker action prerequisites', 'Подготовка операции Worker')); top.transient(self.root)
+        apply_branding(top)
         frame = ttk.Frame(top, padding=16); frame.pack(fill='both', expand=True)
         ttk.Label(frame, text=label('Configure the selected server access on the page behind this window. Select the exact installed release here. Only the reviewed worker action runs; do not press Install again.', 'Настройте доступ выбранного сервера на странице. Здесь выберите точный установленный релиз. Запускается только операция Worker; повторная установка стека не нужна.'), wraplength=680).pack(anchor='w')
         self.field(frame, 'Exact installed complete release ZIP', 'ZIP точного установленного релиза', self.release, browse=lambda: self.release.set(filedialog.askopenfilename(parent=top, filetypes=[('Complete ZIP', '*.zip')]) or self.release.get()))

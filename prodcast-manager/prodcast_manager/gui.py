@@ -19,10 +19,12 @@ from .portable import (data_directory, profile_directory, runtime_config, save_c
                        open_credentials, LegacyPasswordRequired, remember, last_directory)
 from cryptography.fernet import InvalidToken
 from .app_certificate import read_pfx, store_app_certificate, validate_for_site
+from .ui_controls import apply_branding, fresh_site
 
 class AdminAccessDialog(tk.Toplevel):
     def __init__(self, parent, url, username, password):
         super().__init__(parent)
+        apply_branding(self)
         self.title(tr('Доступ администратора App'))
         self.transient(parent)
         self.columnconfigure(1, weight=1)
@@ -165,7 +167,7 @@ class Actions:
     def pick_directory(self):
         if self.busy:return
         self.directory=data_directory(self.home)/'sites'/'new'
-        fresh=example();fresh['install_ai']=False;fresh['hosts']['ai']['address']=''
+        fresh=fresh_site()
         self.populate(fresh);self.auth={};self.master.set('')
         self.pfx_password.set('');self.pfx_path.set('');self.pfx_url.set('');self.pfx_ca.set('')
         self.show_certificate(None);self.dirlabel.config(text=tr('Новая площадка — будет сохранена в prodcast-data/sites рядом с Manager'))
@@ -430,6 +432,7 @@ class Actions:
     def reset_dialog(self):
         if self.busy:return
         top=tk.Toplevel(self.root);top.title(tr('Очистить VM…'));top.transient(self.root);top.grab_set()
+        apply_branding(top)
         frame=ttk.Frame(top,padding=20);frame.pack(fill='both',expand=True)
         ttk.Label(frame,text=tr('Удаляются только компоненты выбранной установки ProdCast.\nОС, SSH, сеть, системные зависимости и резервные копии на VM сохраняются.'),wraplength=650).pack(anchor='w',pady=8)
         for label,mode in [('Пересоздать компоненты, сохранив данные','reset-keep'),('Полный сброс: удалить данные ProdCast','reset-full')]:

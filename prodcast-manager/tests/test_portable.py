@@ -54,6 +54,7 @@ def test_gui_changing_vm_addresses_creates_separate_credentials(tmp_path):
     from prodcast_manager.gui import App
     root=tk.Tk();root.withdraw();app=App(root,log_dir=tmp_path/'logs',app_home=tmp_path/'manager')
     try:
+        app.populate(example())
         first=app.vault();first.data['installation_id']='production';first.save()
         old=app.directory;original=(old/'secrets.json').read_bytes()
         app.hostvars['app']['address'].set('192.168.31.141')

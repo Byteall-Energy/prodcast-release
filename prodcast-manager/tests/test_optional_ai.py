@@ -148,6 +148,7 @@ def test_gui_ai_setting_roundtrip_and_icon(tmp_path):
     root=tk.Tk();root.withdraw()
     try:
         app=App(root,log_dir=tmp_path/'logs',app_home=tmp_path/'manager')
+        app.populate(example())
         app.install_ai.set(False)
         assert app.config()['install_ai'] is False
         assert (RESOURCES/'prodcast-manager.ico').read_bytes()[:4]==b'\x00\x00\x01\x00'

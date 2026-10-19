@@ -2,6 +2,10 @@
 
 The desktop application now uses a site workspace with seven sections. Existing site profiles, vaults, release-integrity checks and deployment engines are retained. This change does not introduce Worker domain service accounts or hostname support for VM endpoints.
 
+New sites have empty server addresses, App URL and management-PC IPv4. Grey documentation-range examples are separate visual hints; they are never entry values and cannot be saved or used for connections. Existing profiles retain their configured addresses. The main window, custom dialogs, nested windows and future Tk dialogs use the shared ProdCast icon; Windows process identity is set to ProdCast Manager.
+
+The current desktop renderer is Tkinter with the `clam` theme. The HTML design preview illustrates the layout and behavior; its rounded surfaces and typography are not reproduced by standard Tk controls. A close visual match requires a dedicated Tk theme/component styling pass; matching the HTML rendering exactly would require an embedded web UI and its packaging/runtime integration.
+
 ## Everyday use
 
 - **Overview:** current local site, local deployment receipt, unresolved journal count and links to status checks. Remote health is never inferred from a completed local operation.

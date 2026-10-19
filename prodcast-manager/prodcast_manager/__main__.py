@@ -58,8 +58,10 @@ def main():
                 v=open_credentials(test_home/'test-site');v.data={'check':'synthetic'};v.save()
                 assert open_credentials(test_home/'test-site').data=={'check':'synthetic'}
                 root=tk.Tk();root.withdraw();app=App(root,log_dir=test_home/'logs',app_home=test_home);root.update()
-                assert len(app.hostvars)==5 and app.config()['schema']==1
-                assert app.config()['hosts']['ai']['address']=='' and not app.install_ai.get()
+                assert len(app.hostvars)==5 and all(not h['address'].get() for h in app.hostvars.values())
+                assert not app.install_ai.get()
+                configured=example();configured['install_ai']=False;configured['hosts']['ai']['address']=''
+                app.populate(configured);assert app.config()['schema']==1
                 app.worker_count.set('16');assert len(app.server_tree.get_children())==19
                 app.worker_count.set('1');assert len(worker_roles(app.config()))==1
                 app.language_choice.set('English');app.change_language()

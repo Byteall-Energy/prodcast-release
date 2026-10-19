@@ -87,6 +87,7 @@ def test_operation_opens_and_records_core_logs_and_filters(workspace):
 def test_installed_core_identity_cannot_silently_change_site(workspace):
     _, app = workspace
     c = example(); save_config(app.directory, c)
+    app.populate(c)
     vault = open_credentials(app.directory); vault.data['topology'] = 'installed'; vault.save()
     app.hostvars['app']['address'].set('192.168.31.151')
     with pytest.raises(ValueError, match='installed|установленный'): app.prepare_profile()
@@ -155,3 +156,62 @@ def test_ldap_form_transport_controls_and_result_invalidation(workspace):
         assert 'previous result' != dialog.test_results['connection'].get()
         assert str(dialog.lookup.get()) == 'userPrincipalName'
     finally: dialog.close()
+
+
+def test_new_site_addresses_are_empty_and_examples_are_not_values(workspace, monkeypatch):
+    from prodcast_manager.ui_controls import ExampleEntry
+    _, app = workspace
+    assert all(var['address'].get() == '' for var in app.hostvars.values())
+    app.edit_server('app')
+    def descendants(parent):
+        for widget in parent.winfo_children():
+            yield widget
+            yield from descendants(widget)
+    entry = next(w for w in descendants(app.connection_editor) if isinstance(w, ExampleEntry))
+    assert entry.example == '192.0.2.10' and entry.get() == ''
+    app.hostvars['app']['address'].set('192.168.31.151')
+    assert entry.get() == '192.168.31.151' and entry._hint.winfo_manager() == ''
+    app.hostvars['app']['address'].set('')
+    assert entry.get() == '' and entry._hint.winfo_manager() == 'place'
+    with pytest.raises(ValueError, match='IPv4'): app.config()
+    monkeypatch.setattr('prodcast_manager.workspace.messagebox.showinfo', Mock())
+    app.save_draft()
+    assert '192.0.2.10' not in (app.directory / 'ui-draft.json').read_text('utf-8')
+
+
+def test_custom_and_nested_popups_use_prodcast_icon(workspace):
+    import sys
+    if sys.platform != 'win32': pytest.skip('Windows window-icon API')
+    from prodcast_manager.gui import AdminAccessDialog
+    from prodcast_manager.activation_dialog import ActivationDialog
+    from prodcast_manager.directory_dialog import DirectoryDialog
+    from prodcast_manager.ui_controls import apply_branding
+    import ctypes
+    root, app = workspace
+    user32 = ctypes.windll.user32
+    user32.GetParent.argtypes = [ctypes.c_void_p]; user32.GetParent.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.GetClassLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.GetClassLongPtrW.restype = ctypes.c_void_p
+    def has_window_icon(window):
+        window.update_idletasks()
+        hwnd = user32.GetParent(window.winfo_id())
+        # Windows uses the registered class icon when no per-window icon exists.
+        return bool(user32.SendMessageW(hwnd, 0x007F, 1, 0) or user32.GetClassLongPtrW(hwnd, -14))
+    assert has_window_icon(root)
+    windows = [AdminAccessDialog(root, 'https://example.test', 'admin', 'synthetic'),
+               ActivationDialog(root, 'test-installation', {}, 'company', lambda value: None),
+               DirectoryDialog(root, {}, lambda value: None, lambda *args: {})]
+    try:
+        for dialog in windows: assert has_window_icon(dialog)
+        nested = tk.Toplevel(windows[0]); apply_branding(nested)
+        try: assert has_window_icon(nested)
+        finally: nested.destroy()
+        inherited = tk.Toplevel(root)
+        try: assert has_window_icon(inherited)
+        finally: inherited.destroy()
+    finally:
+        for dialog in windows:
+            if isinstance(dialog, DirectoryDialog): dialog.close()
+            else: dialog.destroy()

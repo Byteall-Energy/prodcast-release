@@ -123,7 +123,9 @@ def test_gui_language_dynamic_workers_and_optional_ai_preserve_input(tmp_path):
     root=tk.Tk();root.withdraw()
     try:
         app=App(root,log_dir=tmp_path/'logs',app_home=tmp_path/'manager')
-        assert app.config()['hosts']['ai']['address']=='' and app.config()['install_ai'] is False
+        assert all(not h['address'].get() for h in app.hostvars.values()) and app.install_ai.get() is False
+        configured=example();configured['install_ai']=False;configured['hosts']['ai']['address']=''
+        app.populate(configured)
         # AI package selection is now independent from including AI in the site.
         assert 'ai' in app.pages and app.ai_update.get()=='keep'
         app.ai_ollama.set('C:/offline/ollama.zip')
