@@ -47,13 +47,25 @@ def directory_check(config, username='', password='', test_user=False):
             conn.unbind()
             raise ProbeFailure('bind_failed')
         return conn
-    conn = connect(config['bind_dn'], config['bind_password'])
+    service = bool(config.get('bind_dn'))
+    if not service:
+        if not username.strip() or not password:
+            raise ProbeFailure('test_credentials_required')
+        user = username.strip()
+        if '@' in user:
+            if user.rsplit('@', 1)[1].lower() != config['domain'].lower():
+                raise ProbeFailure('wrong_domain')
+        elif '\\' in user:
+            raise ProbeFailure('use_upn')
+        identity = user if '@' in user else user+'@'+config['domain']
+    conn = connect(config['bind_dn'] if service else identity,
+                   config['bind_password'] if service else password)
     try:
         if not conn.search(config['base_dn'], '(objectClass=*)', search_scope=BASE, attributes=['distinguishedName'], time_limit=8) or len(conn.entries) != 1:
             raise ProbeFailure('base_not_found')
         if not conn.search(config['group_dn'], '(objectClass=group)', search_scope=BASE, attributes=['distinguishedName'], time_limit=8) or len(conn.entries) != 1:
             raise ProbeFailure('group_not_found')
-        result = {'service_bind': True, 'base_found': True, 'group_found': True}
+        result = {'service_bind': service, 'user_bind': not service, 'base_found': True, 'group_found': True}
         if not test_user:
             return result
         user = username.strip()

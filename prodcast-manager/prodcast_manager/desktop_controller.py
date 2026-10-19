@@ -385,7 +385,8 @@ class DesktopController:
         from .directory import save_directory
         self._idle(); vault = self._vault()
         value = copy.deepcopy(payload)
-        if 'bind_password' not in value: value['bind_password'] = vault.data.get('directory',{}).get('bind_password','')
+        if not value.get('bind_dn', '').strip(): value['bind_password'] = ''
+        elif 'bind_password' not in value: value['bind_password'] = vault.data.get('directory',{}).get('bind_password','')
         save_directory(vault,value); self.log.protect(vault.data)
         return {'saved':True,'applied':False}
 
@@ -402,7 +403,8 @@ class DesktopController:
     def directory_probe(self, payload):
         from .directory import probe_directory
         value = copy.deepcopy(payload['directory']); vault = self._read_vault()
-        if 'bind_password' not in value: value['bind_password'] = vault.get('directory',{}).get('bind_password','')
+        if not value.get('bind_dn', '').strip(): value['bind_password'] = ''
+        elif 'bind_password' not in value: value['bind_password'] = vault.get('directory',{}).get('bind_password','')
         role = self._host('app'); auth = copy.deepcopy(vault.get('ssh',{}).get('app',{}))
         password = payload.get('password',''); user = payload.get('user',''); mode = payload['mode']
         self.log.protect({'directory':value,'directory_test_password':password})

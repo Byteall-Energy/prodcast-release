@@ -36,4 +36,6 @@ An installed, topology-bound profile cannot silently become a new site by editin
 
 ## Validation
 
+LDAP and LDAPS both allow the search account and password to be omitted together. App deployment keeps the existing user-bind contract and group restrictions. Without a search account, directory diagnostics require temporary test-user credentials; these are never saved and anonymous lookup is not attempted. Clearing the search account in the HTML interface also removes its encrypted saved password. LDAP without TLS still requires explicit acknowledgement; LDAPS certificate verification remains mandatory.
+
 Regression coverage includes both authentication methods, saved password retention, trusted-key confirmation, Linux privilege selection, incomplete drafts without secrets, legacy profile separation, stable Worker IDs, explicit AI omission, persistent operation history, target filtering (including errors), concurrent log append, interrupted/corrupt records, all pending-journal families, deployment receipts, bilingual labels and directory test-result handling. Deployment-engine tests remain part of the full suite.

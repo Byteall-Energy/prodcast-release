@@ -54,6 +54,23 @@ def test_connection_probe_does_not_require_group_or_account():
     with pytest.raises(ValueError):validate_directory({'url':'ldaps://dc01.example.com'})
 
 
+@pytest.mark.parametrize('scheme',['ldap','ldaps'])
+def test_search_account_is_optional_for_both_transports(scheme):
+    from prodcast_manager.directory import app_directory
+    value=dict(settings(),url=scheme+'://dc01.example.com',allow_plain_ldap=True,
+               bind_dn='',bind_password='',enabled=True)
+    assert validate_directory(value)['bind_dn']==''
+    deployed=app_directory(value)
+    assert deployed['mode']==scheme and deployed['group_filter_enabled']
+    assert deployed['user_dn_template']=='%(user)s@example.com'
+
+
+@pytest.mark.parametrize('missing',['bind_dn','bind_password'])
+def test_partial_search_credentials_are_rejected(missing):
+    with pytest.raises(ValueError,match='both search account'):
+        validate_directory(dict(settings(),**{missing:''}))
+
+
 def test_ca_accepts_der_and_pem_rejects_leaf_and_private_key(pki):
     ca=x509.load_pem_x509_certificate(pki['ca.crt'].encode())
     assert read_ca(ca.public_bytes(serialization.Encoding.DER))==pki['ca.crt']
@@ -108,7 +125,7 @@ def test_probe_errors_do_not_leak_details(monkeypatch,error,code):
     assert probe.run_probe({'config':settings(),'mode':'connection'})=={'ok':False,'code':code}
 
 
-def mock_directory(monkeypatch,member=True,disabled=False,login=True):
+def mock_directory(monkeypatch,member=True,disabled=False,login=True,secure=True):
     import ldap3
     connections=[];searches=[]
     class Conn:
@@ -123,8 +140,11 @@ def mock_directory(monkeypatch,member=True,disabled=False,login=True):
             self.entries=[SimpleNamespace(entry_dn='CN=Person,DC=example,DC=com',entry_attributes_as_dict={'userAccountControl':[2 if disabled else 512]})] if found else []
             return found
     def server(host,**kwargs):
-        assert kwargs['use_ssl'] and kwargs['tls'].validate==ssl.CERT_REQUIRED
-        assert kwargs['tls'].sni==host
+        assert kwargs['use_ssl'] is secure
+        if secure:
+            assert kwargs['tls'].validate==ssl.CERT_REQUIRED
+            assert kwargs['tls'].sni==host
+        else: assert kwargs['tls'] is None
         return object()
     monkeypatch.setattr(ldap3,'Server',server);monkeypatch.setattr(ldap3,'Connection',Conn)
     return connections,searches
@@ -137,6 +157,39 @@ def test_user_group_and_password_all_required(monkeypatch):
     assert len(connections)==2 and all(c.closed for c in connections)
     assert connections[1].kw['user']=='CN=Person,DC=example,DC=com'
     assert any('1.2.840.113556.1.4.1941' in s[1] for s in searches)
+
+
+@pytest.mark.parametrize('test_user',[False,True])
+@pytest.mark.parametrize('secure',[False,True])
+def test_search_uses_temporary_user_when_no_service_account(monkeypatch,test_user,secure):
+    connections,searches=mock_directory(monkeypatch,secure=secure)
+    value=dict(settings(),bind_dn='',bind_password='',allow_plain_ldap=not secure,
+               url=('ldaps' if secure else 'ldap')+'://dc01.example.com')
+    result=probe.directory_check(value,'person','secret',test_user)
+    assert result['service_bind'] is False and result['user_bind'] is True
+    assert connections[0].kw['user']=='person@example.com'
+    assert connections[0].kw['password']=='secret'
+    assert all(c.closed for c in connections)
+    if test_user: assert result['allowed_group']
+
+
+def test_no_service_account_never_falls_back_to_anonymous(monkeypatch):
+    connections,_=mock_directory(monkeypatch)
+    with pytest.raises(probe.ProbeFailure,match='test_credentials_required'):
+        probe.directory_check(dict(settings(),bind_dn='',bind_password=''))
+    assert not connections
+
+
+def test_failed_direct_user_bind_cannot_pass(monkeypatch):
+    import ldap3
+    connections,_=mock_directory(monkeypatch)
+    original=ldap3.Connection
+    def denied(*args,**kwargs):
+        conn=original(*args,**kwargs);conn.bind=lambda:False;return conn
+    monkeypatch.setattr(ldap3,'Connection',denied)
+    with pytest.raises(probe.ProbeFailure,match='bind_failed'):
+        probe.directory_check(dict(settings(),bind_dn='',bind_password=''),'person','bad',True)
+    assert len(connections)==1 and connections[0].closed
 
 
 @pytest.mark.parametrize('opts,code',[({'member':False},'not_in_group'),({'disabled':True},'user_disabled_or_locked'),({'login':False},'bind_failed')])

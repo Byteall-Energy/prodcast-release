@@ -69,7 +69,7 @@ class DirectoryDialog(tk.Toplevel):
     def probe(self,mode):
         if self.busy:return
         try:
-            value=self.value(mode=='connection');user=self.test_user.get().strip();password=self.test_password.get() if mode=='user' else ''
+            value=self.value(mode=='connection');user=self.test_user.get().strip();password=self.test_password.get() if mode=='user' or not value['bind_dn'] else ''
             if mode=='user' and (not user or not password):raise ValueError(tr('Введите логин и пароль для пробного входа.'))
             self.test_password.set('');self.busy=True;self.on_busy(True)
             self.probe_mode=mode

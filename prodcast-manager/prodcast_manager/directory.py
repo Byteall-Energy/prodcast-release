@@ -76,8 +76,8 @@ def validate_directory(value, connection_only=False):
         for key in ('base_dn', 'group_dn'):
             if not out[key] or '=' not in out[key]:
                 raise ValueError(tr('Укажите Base DN и полный DN группы допуска.'))
-        if not out['bind_dn'] or not out['bind_password']:
-            raise ValueError(tr('Укажите служебную учётную запись для чтения AD и её пароль.'))
+        if bool(out['bind_dn']) != bool(out['bind_password']):
+            raise ValueError('Provide both search account and password, or leave both empty.')
     lookup=value.get('user_search_attribute','userPrincipalName')
     if lookup not in ('userPrincipalName','sAMAccountName'):raise ValueError('Unsupported AD user lookup attribute')
     out.update(schema=1, provider='active_directory', user_search_attribute=lookup)
@@ -111,6 +111,8 @@ def probe_directory(host, credentials, value, mode='connection', username='', pa
     config = validate_directory(value, connection_only=mode == 'connection')
     if mode == 'user' and (not username.strip() or not password):
         raise ValueError(tr('Введите логин и пароль для пробного входа.'))
+    if mode != 'connection' and not config['bind_dn'] and (not username.strip() or not password):
+        raise ValueError('Enter a test login and password to check LDAP without a search account; these credentials are not saved.')
     if not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', host.get('fingerprint', '')):
         raise ValueError(tr('Сначала подтвердите SSH-отпечаток App на вкладке серверов.'))
     r = remote_factory('app', host, credentials, log)

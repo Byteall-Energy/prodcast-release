@@ -62,6 +62,18 @@ def runtime_site(controller):
     return runtime_config(controller.directory/'site.json')
 
 
+def test_clearing_search_account_removes_stored_password(controller):
+    value=dict(enabled=True,url='ldaps://dc.example.com',domain='example.com',
+               base_dn='DC=example,DC=com',group_dn='CN=Users,DC=example,DC=com',
+               bind_dn='svc@example.com',bind_password='old-search-secret')
+    controller.directory_save(value)
+    value.pop('bind_password');value['bind_dn']=''
+    controller.directory_save(value)
+    saved=controller._read_vault()['directory']
+    assert saved['bind_dn']==saved['bind_password']==''
+    assert saved['enabled']
+
+
 def test_installed_core_and_worker_membership_cannot_be_saved_as_regular_edits(controller):
     controller.update({'config':configured()}); controller.save_profile()
     vault = controller._vault(); vault.data['topology']=topology_hash(controller.config); vault.save()
