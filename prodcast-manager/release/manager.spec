@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import copy_metadata
 
 project=Path(SPECPATH).parent
 sys.path.insert(0,str(project/'release'))
-from qt_runtime import runtime_files,consistent_binaries
+from qt_runtime import runtime_files,consistent_binaries,desktop_resources
 
 qt=Path(PySide6.__file__).parent
 runtimes=runtime_files(qt)
@@ -18,8 +18,9 @@ for distribution in ('PySide6','PySide6_Essentials','PySide6_Addons','PySide6_We
 a=Analysis([str(project/'manager.py')],pathex=[str(project)],
            binaries=[(str(path),'.') for path in runtimes.values()],
            datas=[(str(project/'prodcast_manager/resources'),'prodcast_manager/resources'),*metadata],
-           hiddenimports=[],hookspath=[],runtime_hooks=[],excludes=[],noarchive=False)
+           hiddenimports=[],hookspath=[str(project/'release/hooks')],runtime_hooks=[],excludes=[],noarchive=False)
 a.binaries=consistent_binaries(a.binaries,runtimes)
+a.datas=desktop_resources(a.datas)
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,a.binaries,a.datas,[],name='ProdCast-Manager',
         debug=False,bootloader_ignore_signals=False,strip=False,upx=False,console=False,

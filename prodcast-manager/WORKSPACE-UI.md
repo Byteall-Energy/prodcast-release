@@ -12,6 +12,8 @@ Builds use `release/manager.spec`, which bundles the Qt wheel's C++ redistributa
 
 ## Everyday use
 
+Packaging retains the same HTML/CSS/assets and bundled offline renderer, but omits WebEngine debug/DevTools packs, unused QML application plugins and translations outside English/Russian. QtQml/QtQuick libraries required by WebEngine are still resolved normally. Software OpenGL, Chromium rendering packs, ICU data, certificate/crypto support and the helper process are retained for VM compatibility. This optimization does not substitute a system browser or require WebView2.
+
 - **Overview:** current local site, local deployment receipt, unresolved journal count and links to status checks. Remote health is never inferred from a completed local operation.
 - **Servers & workers:** select a row; Password shows the SSH password directly, SSH key shows private key and optional passphrase. Linux adds explicit sudo choices; Windows does not. Fingerprint verification is separate, asynchronous and requires explicit trust. Test selected server checks sign-in and privileges without staging an agent or requiring other hosts to be configured.
 - **Install / update:** Site → Package → AI → Review. The expected hash is the SHA256 of `release-manifest.json`, not of the ZIP. Local package verification does not bypass the engine's final compatibility and ownership checks. Update can intentionally omit AI packages using Keep existing AI; installation still follows the site's AI setting and release requirements.
