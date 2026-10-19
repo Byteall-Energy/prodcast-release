@@ -1,4 +1,4 @@
-"""Renderer-independent API for the local HTML desktop application."""
+"""Renderer-independent API for the local desktop application."""
 import copy
 import hashlib
 import hmac
@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .config import validate, atomic_json, worker_roles, topology_hash
+from .config import validate, atomic_json, worker_roles, topology_hash, fresh_site
 from .engine import Engine
 from .i18n import set_language, rendered
 from .operation_history import OperationHistory, pending_operations, filtered_events
@@ -21,7 +21,6 @@ from .portable import (data_directory, last_directory, runtime_config, save_conf
 from .release import Release
 from .session_logs import SessionLog, application_directory
 from .vault import Vault
-from .ui_controls import fresh_site
 
 
 class DesktopController:

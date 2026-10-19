@@ -31,6 +31,14 @@ def example():
                           'auth': 'key', 'key_path': '', 'fingerprint': ''}
                       for r,n in zip(ROLES, (23,128,76,21,85))}}
 
+def fresh_site():
+    """Empty connection values; examples belong to visual placeholders only."""
+    value=example();value['install_ai']=False
+    for host in value['hosts'].values():host['address']=''
+    value['public_url']='';value['admin_ip']=''
+    return value
+
+
 def validate(c, require_trust=False):
     if not isinstance(c.get('install_ai',True),bool): raise ValueError('install_ai must be boolean')
     if c.get('schema') != 1: raise ValueError('Unsupported site schema')

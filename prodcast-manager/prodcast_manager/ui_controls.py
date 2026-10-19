@@ -57,10 +57,5 @@ class ExampleEntry(ttk.Entry):
 
 
 def fresh_site():
-    from .config import example
-    value = example()
-    value['install_ai'] = False
-    for host in value['hosts'].values(): host['address'] = ''
-    value['public_url'] = ''
-    value['admin_ip'] = ''
-    return value
+    from .config import fresh_site as create
+    return create()

@@ -30,7 +30,7 @@ def main():
     parser.add_argument('--ollama-components',default='',help='Separate Ollama components ZIP from the offline release')
     a=parser.parse_args();home=application_directory();path=Path(a.site).resolve() if a.site else last_directory(home)/'site.json';directory=path.parent
     if a.action=='gui':
-        from .html_ui import main as gui
+        from .tk_ui import main as gui
         gui();return
     if a.action=='self-test':
         for name in ('linux.py','worker.ps1','worker-service-runner.py','app.env.in','worker-grants.sql','directory_probe.py','maintenance_linux.py','workers_linux.py','ai-documents.sql'):assert (RESOURCES/name).stat().st_size>100
@@ -50,7 +50,7 @@ def main():
             [x509.load_pem_x509_certificate(tls['ca.crt'].encode())],serialization.NoEncryption())
         assert read_pfx(data,'',c['public_url'])['url']==c['public_url']
         if a.gui_smoke:
-            from .html_ui import smoke_test
+            from .tk_ui import smoke_test
             smoke_test(home)
         print('PASS: bundled resources, configuration and PFX import'+(' and portable credentials / GUI initialization' if a.gui_smoke else ''));return
     if a.action=='init':
