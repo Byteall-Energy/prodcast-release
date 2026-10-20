@@ -46,6 +46,7 @@ class DesktopController:
         set_language(self.language)
         self.config = fresh_site()
         if (self.directory / 'site.json').exists(): self.config = runtime_config(self.directory / 'site.json')
+        self.membership_stamp=self._membership_stamp()
         self._restore_draft()
         self.log.remote_listener = lambda role, action, text: self.emit(role + ': ' + action + '\n' + text)
 
@@ -90,6 +91,7 @@ class DesktopController:
                 key = (self.directory / 'secrets.key').read_text('ascii').strip()
                 applied = 'match' if receipt.get('signature',receipt.get('settings_signature')) == self._signature(runtime_config(self.directory / 'site.json'), vault, key) else 'pending'
             return dict(version=__version__, language=self.language, site=self.directory.name,
+                        membership_stamp=self.membership_stamp,
                         profile_path=str(self.directory), sites=self.sites(), config=copy.deepcopy(self.config),
                         packages=dict(self.packages), busy=self.busy, dirty=self.dirty,
                         installed=installed, identity_bound=bool(vault.get('topology')), active=self.active['id'] if self.active else None,
@@ -109,6 +111,29 @@ class DesktopController:
             return value if isinstance(value, dict) else {}
         except (OSError, ValueError): return {}
 
+    def _membership_stamp(self):
+        site=self._json(self.directory/'site.json')
+        value={r:h.get('address') for r,h in site.get('hosts',{}).items() if r.startswith('worker')}
+        return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+    def _reconcile_removed_workers(self,config,stamp):
+        current_stamp=self._membership_stamp()
+        if stamp==current_stamp:return False
+        saved=self._json(self.directory/'site.json')
+        journal=self._json(self.directory/'worker-action-journal.json')
+        if journal.get('status')!='complete' or journal.get('mode')!='worker-remove':return False
+        role=journal.get('role');original=journal.get('original',{});target=journal.get('target',{})
+        workers=lambda value:{r:h.get('address') for r,h in value.get('hosts',{}).items() if r.startswith('worker')}
+        if (not role or role in saved.get('hosts',{}) or workers(saved)!=workers(target)
+                or config.get('site_id')!=saved.get('site_id')
+                or any(config.get('hosts',{}).get(r,{}).get('address')!=saved.get('hosts',{}).get(r,{}).get('address') for r in ('app','db'))):return False
+        if config.get('hosts',{}).get(role,{}).get('address')!=original.get('hosts',{}).get(role,{}).get('address'):return False
+        if role not in config.get('hosts',{}):return False
+        del config['hosts'][role]
+        if '_worker_topology_hosts' in saved:config['_worker_topology_hosts']=copy.deepcopy(saved['_worker_topology_hosts'])
+        self.emit('Removed stale UI entry for '+role+'; the completed removal and saved installation membership were preserved.')
+        return True
+
     def _restore_draft(self):
         draft = self._json(self.directory / 'ui-draft.json')
         if not draft: return
@@ -125,6 +150,11 @@ class DesktopController:
             for host in self.config['hosts'].values(): host['port'] = int(host.get('port',22))
             self.config['install_ai'] = draft.get('install_ai',False)
             for key in ('release','trusted','ai_model','ai_ollama'): self.packages[key] = draft.get(key,'')
+        if self._reconcile_removed_workers(self.config,draft.get('membership_stamp')):
+            history=self.directory/'history';history.mkdir(exist_ok=True)
+            atomic_json(history/('ui-draft-before-membership-reconcile-'+uuid.uuid4().hex+'.json'),draft)
+            atomic_json(self.directory/'ui-draft.json',dict(config=self.config,packages=self.packages,membership_stamp=self._membership_stamp()))
+        self.membership_stamp=self._membership_stamp()
 
     def update(self, payload):
         self._idle()
@@ -137,14 +167,18 @@ class DesktopController:
             if role not in ('app','db','ai') and not re.fullmatch(r'worker(?:[1-9]|1[0-6])',role): raise ValueError('Invalid role')
             if not isinstance(host,dict) or set(host) - allowed: raise ValueError('Secrets belong in encrypted access storage')
             host['port'] = int(host.get('port',22) or 22)
+        reconciled=self._reconcile_removed_workers(value,payload.get('membership_stamp',self.membership_stamp))
         self.config = value
+        self.membership_stamp=self._membership_stamp()
         self.packages.update({k:str(v) for k,v in payload.get('packages',{}).items() if k in self.packages})
         self.dirty = True
-        return {'saved':False}
+        return {'saved':False,'membership_reconciled':reconciled}
 
     def save_draft(self, payload=None):
         self._idle()
-        atomic_json(self.directory / 'ui-draft.json', dict(config=self.config,packages=self.packages))
+        self._reconcile_removed_workers(self.config,self.membership_stamp)
+        self.membership_stamp=self._membership_stamp()
+        atomic_json(self.directory / 'ui-draft.json', dict(config=self.config,packages=self.packages,membership_stamp=self.membership_stamp))
         remember(self.home,self.directory)
         self.dirty = False
         return {'saved':True,'remote_changed':False}
@@ -166,6 +200,7 @@ class DesktopController:
         if not target.is_relative_to((self.data / 'sites').resolve()): raise ValueError('Invalid site')
         config = runtime_config(target / 'site.json') if (target / 'site.json').exists() else fresh_site()
         self.directory = target; self.config = config
+        self.membership_stamp=self._membership_stamp()
         self.packages = dict(release='',trusted='',ai_model='',ai_ollama='',ai_action='keep')
         self._restore_draft()
         self.fingerprint = self.certificate = self.last_result = None
@@ -327,6 +362,8 @@ class DesktopController:
         self._idle();config=validate(copy.deepcopy(self.config),True);vault=self._vault();packages=dict(self.packages);directory=self.directory
         def preview():
             from .component_updates import changed_roles,update_actions
+            from .ai_policy import preserve_existing_ai,can_reconnect_existing_ai
+            preserve_existing_ai(config,vault,directory)
             release=Release(packages['release'],directory/'cache',packages['trusted'],validate_ai=False)
             engine=Engine(config,vault,release,directory,self.emit,diagnostics=self.log)
             journal=self._json(directory/'journal.json')
@@ -351,12 +388,19 @@ class DesktopController:
         needs_release = mode in ('install','update','repair','ai','healthcheck')
         if needs_release and not packages['release']: raise ValueError('Select the complete release first')
         def perform():
+            from .ai_policy import preserve_existing_ai,can_reconnect_existing_ai
+            preserved=mode=='update' and preserve_existing_ai(config,vault,directory,self.emit)
             keep_ai = mode == 'update' and packages.get('ai_action') == 'keep'
+            keep_ai=keep_ai or preserved
+            reconnect_ai=mode=='ai' and not self._json(directory/'journal.json').get('install_ai',True) and can_reconnect_existing_ai(vault,directory)
             release = Release(packages['release'],directory / 'cache',packages['trusted'],validate_ai=False,
-                              model_path='' if keep_ai else packages['ai_model'],ollama_path='' if keep_ai else packages['ai_ollama']) if needs_release else None
+                              model_path='' if keep_ai or reconnect_ai else packages['ai_model'],ollama_path='' if keep_ai or reconnect_ai else packages['ai_ollama']) if needs_release else None
             engine=Engine(config,vault,release,directory,self.emit,diagnostics=self.log)
             engine.keep_ai=keep_ai
             result=engine.run(mode)
+            if preserved:
+                saved=save_config(directory,config)
+                with self.lock:self.config=saved
             if mode in ('install','update','healthcheck') and self._json(directory / 'journal.json').get('status') == 'complete':
                 key = (directory / 'secrets.key').read_text('ascii').strip()
                 atomic_json(directory / 'ui-deployed.json',dict(version=release.version,manifest=release.digest,signature=self._signature(config,vault.data,key)))
@@ -396,7 +440,8 @@ class DesktopController:
             release = Release(packages['release'],directory / 'cache',packages['trusted'],validate_ai=False) if mode != 'worker-remove' else None
             saved = add_workers(directory,target,vault,release,self.emit,diagnostics=self.log) if mode == 'add-workers' else run_worker_action(directory,role,mode,vault,release,self.emit,diagnostics=self.log)
             (directory / 'ui-draft.json').unlink(missing_ok=True)
-            with self.lock: self.config = saved; self.dirty = False
+            with self.lock:
+                self.config = saved; self.dirty = False;self.membership_stamp=self._membership_stamp()
             return {'finished':True,'role':role}
         return self._job(mode,run)
 

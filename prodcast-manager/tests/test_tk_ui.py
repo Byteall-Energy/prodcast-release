@@ -22,6 +22,20 @@ def window(tmp_path):
 def type_value(entry,text):entry.delete(0,'end');entry.insert(0,text)
 
 
+def test_stale_worker_selection_is_removed_before_next_update(window):
+    import copy
+    from test_desktop_controller import completed_worker_removal,runtime_site
+    old,target,stamp=completed_worker_removal(window.controller)
+    window.controller.config=runtime_site(window.controller)
+    window.controller.membership_stamp=window.controller._membership_stamp()
+    window.config=copy.deepcopy(old);window.membership_stamp=stamp;window.role='worker2'
+    window.navigate('servers');window.sync()
+    assert 'worker2' not in window.config['hosts']
+    assert window.role=='worker1'
+    assert 'worker2' not in window.server_tree.get_children()
+    window.controller._prepare()
+
+
 def test_worker_service_form_keeps_ssh_password_separate(window):
     window.role='worker1';window.worker_services['worker1']={'mode':'custom','account':'EXAMPLE\\svc'}
     window.navigate('servers')

@@ -101,6 +101,17 @@ def test_missing_baseline_preview_shows_full_scope(deployed):
     assert changed_roles(deployed,{})==core_roles(deployed.c)
 
 
+def test_confirmed_retired_worker_receipt_does_not_block_next_update(deployed):
+    from prodcast_manager.worker_lifecycle import removal_target
+    from prodcast_manager.config import worker_addresses
+    e=deployed;e.c=removal_target(e.c,'worker2')
+    e.vault.data.update(worker_hosts=worker_addresses(e.c),worker_topology_hosts=e.c['_worker_topology_hosts'],retired_workers={'worker2':{'operation':'removed'}})
+    result=e.run('update')
+    assert result['status']=='complete'
+    assert not any(r=='worker2' for r,a,p in e.test_calls)
+    assert 'worker2' not in e.vault.data['deployment_components']['roles']
+
+
 def test_pending_legacy_update_keeps_original_resume_path_without_healthcheck(deployed):
     e=deployed
     journal=json.loads((e.dir/'journal.json').read_text());journal.update(status='failed',mode='update')

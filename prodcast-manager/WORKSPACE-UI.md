@@ -36,7 +36,15 @@ After successful core deployment, `ui-deployed.json` records the release, manife
 
 An installed, topology-bound profile cannot silently become a new site by editing its core address or ID. Use New site. Uninstalled local profiles retain the existing separate-profile behavior when endpoints change. Existing worker IDs remain stable across removal and re-addition; initial worker count is for new sites, with explicit Add / Remove for installed sites.
 
+Completed Worker removals are authoritative over older UI drafts and stale open-window submissions. Drafts carry a saved-membership stamp; reconciliation removes only the same address/role proven removed by a completed Worker action whose target matches the saved roster. Unrelated edits and package selections remain intact, and repaired legacy drafts are archived in history. The UI switches away from a deleted selection; update guards remain active for unauthorized address/roster edits. New explicit re-add drafts carry the current stamp and are not erased. Removed Workers are pruned from component receipts; older receipts containing vault-confirmed retired roles no longer block the next update. No service, installation ID or vault secret is reset by draft reconciliation.
+
 ## Validation
+
+### AI preservation and reconnect
+
+An already installed AI (successful AI journal or encrypted installed receipt) is preserved during core updates even if its inclusion checkbox was cleared. Manager keeps AI enabled in the effective/saved profile and skips AI packages in that case. "Keep existing AI" preserves the connection, models and runtime; it is not an instruction to disable integration. Sites with no installed AI can still omit it.
+
+If a completed core update recorded AI disabled, enable App connection to AI on the **AI** tab and run its AI action. When an existing AI installation is recorded, Manager checks all owners, preserves the old journal, restores only the scoped PostgreSQL access rule/firewall, reloads PostgreSQL (no DB restart), verifies existing AI readiness, patches App's AI enable/URL values using its existing credentials, and verifies from App. No Worker action or model/package upload occurs. App backend services may restart briefly; env changes roll back if restart fails. Failures retain a resumable AI journal and do not mark the core deployment failed. First-time AI installation or pending package installation still uses the normal package path with the required connection steps. DB component receipts now include the AI-enabled setting because DB access depends on it.
 
 ### Existing installation and scoped updates
 

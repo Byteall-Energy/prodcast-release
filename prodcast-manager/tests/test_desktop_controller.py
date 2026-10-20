@@ -84,6 +84,66 @@ def runtime_site(controller):
     return runtime_config(controller.directory/'site.json')
 
 
+def completed_worker_removal(controller):
+    from prodcast_manager.worker_lifecycle import removal_target
+    from prodcast_manager.config import worker_addresses
+    controller.update({'config':configured()});controller.save_profile()
+    original=runtime_site(controller);stamp=controller._membership_stamp()
+    target=removal_target(original,'worker2')
+    vault=controller._vault();vault.initialize(original)
+    vault.data.update(worker_hosts=worker_addresses(target),worker_topology_hosts=target['_worker_topology_hosts'])
+    vault.data.setdefault('retired_workers',{})['worker2']={'address':original['hosts']['worker2']['address'],'operation':'removed'}
+    vault.save();save_config(controller.directory,target)
+    atomic_json(controller.directory/'worker-action-journal.json',dict(status='complete',mode='worker-remove',role='worker2',operation='removed',original=original,target=target))
+    return original,target,stamp
+
+
+def test_legacy_stale_draft_is_reconciled_without_losing_other_edits(controller):
+    original,target,stamp=completed_worker_removal(controller)
+    original['company_name']='Keep draft company'
+    draft=dict(config=original,packages=dict(release='selected-release.zip'))
+    atomic_json(controller.directory/'ui-draft.json',draft)
+    reopened=DesktopController(controller.home)
+    assert set(reopened.config['hosts'])==set(target['hosts'])
+    assert reopened.config['company_name']=='Keep draft company'
+    assert reopened.packages['release']=='selected-release.zip'
+    assert list((controller.directory/'history').glob('ui-draft-before-membership-reconcile-*.json'))
+    reopened._prepare()  # Update no longer fails the installed-membership guard.
+
+
+def test_stale_open_window_cannot_resurrect_removed_worker(controller):
+    original,target,stamp=completed_worker_removal(controller)
+    result=controller.update(dict(config=original,membership_stamp=stamp))
+    assert result['membership_reconciled']
+    controller.save_draft();controller._prepare()
+    assert 'worker2' not in controller.snapshot()['config']['hosts']
+
+
+def test_explicit_readd_draft_after_removal_is_not_silently_deleted(controller):
+    original,target,stamp=completed_worker_removal(controller)
+    fresh=controller._membership_stamp()
+    controller.update(dict(config=original,membership_stamp=fresh));controller.save_draft()
+    reopened=DesktopController(controller.home)
+    assert 'worker2' in reopened.config['hosts']
+    with pytest.raises(ValueError,match='membership'):reopened._prepare()
+
+
+def test_failed_removal_does_not_silently_change_draft_membership(controller):
+    original,target,stamp=completed_worker_removal(controller)
+    journal=controller._json(controller.directory/'worker-action-journal.json');journal['status']='failed'
+    atomic_json(controller.directory/'worker-action-journal.json',journal)
+    controller.update(dict(config=original,membership_stamp=stamp))
+    assert 'worker2' in controller.config['hosts']
+
+
+def test_reconciliation_does_not_hide_unrelated_address_changes(controller):
+    original,target,stamp=completed_worker_removal(controller)
+    original['hosts']['worker1']['address']='10.20.30.222'
+    controller.update(dict(config=original,membership_stamp=stamp))
+    assert 'worker2' not in controller.config['hosts']
+    with pytest.raises(ValueError,match='membership'):controller._prepare()
+
+
 def test_clearing_search_account_removes_stored_password(controller):
     value=dict(enabled=True,url='ldaps://dc.example.com',domain='example.com',
                base_dn='DC=example,DC=com',group_dn='CN=Users,DC=example,DC=com',

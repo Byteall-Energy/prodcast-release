@@ -48,6 +48,13 @@ def test_remove_updates_local_roster_and_releases_access(tmp_path, expansion):
     assert ('worker1', 'maintenance-stop') not in remote.calls
 
 
+def test_removal_prunes_only_deleted_workers_component_receipt(tmp_path,expansion):
+    c,_,vault,_,remote=expansion
+    vault.data['deployment_components']={'installation_id':vault.data['installation_id'],'roles':{'app':{'signature':'preserve-app'},'worker1':{'signature':'preserve-worker1'},'worker2':{'signature':'retire'}}}
+    run_worker_action(tmp_path,'worker2','worker-remove',vault,remote_factory=remote)
+    assert vault.data['deployment_components']['roles']=={'app':{'signature':'preserve-app'},'worker1':{'signature':'preserve-worker1'}}
+
+
 @pytest.mark.parametrize('failure', [('worker2', 'repair'), ('db', 'worker-retire-membership'), ('app', 'maintenance-resume')])
 def test_resume_does_not_repeat_completed_destructive_steps(tmp_path, expansion, failure):
     c, _, vault, release, remote = expansion

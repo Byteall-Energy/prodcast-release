@@ -535,6 +535,61 @@ def psql(sql,db='postgres'):
     return dc('db','exec','-T','--user','postgres','postgres','psql','-X','-v','ON_ERROR_STOP=1','-At','-d',db,input=sql)
 
 
+def require_idle_ai_connection_role(role):
+    if P['role']!=role or not ST.get('version') or ST.get('maintenance') or ST.get('operation') not in ('',None,P['operation']):
+        raise RuntimeError('AI reconnect requires an installed idle '+role+' from the original profile')
+
+
+def reconnect_ai_database():
+    require_idle_ai_connection_role('db')
+    if not C.get('install_ai',True):raise RuntimeError('Enable AI on the AI tab first')
+    if psql("SELECT 1 FROM pg_roles WHERE rolname='prodcast_ai';").strip()!='1' or psql("SELECT 1 FROM pg_database WHERE datname='prodcast_ai';").strip()!='1':
+        raise RuntimeError('Existing AI database/account is missing; reconnect does not create or replace an installation')
+    path=ROOT/'db/config/pg_hba.conf';original=path.read_text()
+    rule=f"hostssl prodcast_ai prodcast_ai {C['hosts']['ai']['address']}/32 scram-sha-256"
+    lines=original.splitlines()
+    if not any(line.split()==rule.split() for line in lines):
+        index=next((i for i,line in enumerate(lines) if line.split()[:3]==['host','all','all']),len(lines))
+        lines.insert(index,rule)
+        write(path,'\n'.join(lines)+'\n',0o644)
+    try:
+        if psql('SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;').strip()!='0':raise RuntimeError('Invalid PostgreSQL access configuration')
+        if psql('SELECT pg_reload_conf();').strip()!='t':raise RuntimeError('PostgreSQL access reload failed')
+        firewall('db')
+    except Exception:
+        write(path,original,0o644);psql('SELECT pg_reload_conf();');raise
+    return {'ai_access':True,'database_restarted':False}
+
+
+def reconnect_ai_app():
+    require_idle_ai_connection_role('app')
+    if not C.get('install_ai',True):raise RuntimeError('Enable AI on the AI tab first')
+    path=old_target()/'app/runtime/runtime.env';original=path.read_text()
+    values={'PRODCAST_AI_ENABLED':'true','PRODCAST_AI_BASE_URL':'https://'+C['hosts']['ai']['address']+':8443'}
+    # Use the existing trust and credentials, not credentials from a new AI installation.
+    expected={'PRODCAST_AI_API_KEY':S['AI_KEY'],'PRODCAST_AI_BASIC_AUTH_PASSWORD':S['AI_BASIC']}
+    saved=dict(line.split('=',1) for line in original.splitlines() if '=' in line and not line.startswith('#'))
+    if any(saved.get(key)!=value for key,value in expected.items()):
+        raise RuntimeError('Installed App AI credentials differ from this vault; reconnect will not replace them')
+    updated=replace_env(original,values)
+    if updated==original:return {'ai_connected':True,'app_restarted':False}
+    selected=P['version'];P['version']=ST['version']
+    try:running=healthy_services('app')
+    finally:P['version']=selected
+    required=set(APIS+['celery-worker'])
+    if not required<=running:raise RuntimeError('Restore App service health before reconnecting AI')
+    # Gateway must resolve the recreated backend container addresses again.
+    services=APIS+['celery-worker','gateway']+(['celery-beat'] if 'celery-beat' in running else [])
+    try:
+        write(path,updated)
+        current_dc('app','up','-d','--no-deps','--pull','never','--force-recreate','--wait','--wait-timeout','240',*services)
+    except Exception:
+        write(path,original)
+        current_dc('app','up','-d','--no-deps','--pull','never','--force-recreate','--wait','--wait-timeout','240',*services)
+        raise
+    return {'ai_connected':True,'app_restarted':True,'workers_changed':False}
+
+
 def configure_ai_documents():
     if P['role']!='db' or not ST.get('version') or ST.get('operation') not in ('',None,P['operation']):
         raise RuntimeError('AI Documents migration requires an installed, idle DB from the original profile')
@@ -1222,6 +1277,16 @@ def repair():
 
 def dispatch():
     action=P['action']; role=P['role']
+    if action=='ai-access':return reconnect_ai_database()
+    if action=='ai-reconnect':return reconnect_ai_app()
+    if action in ('ai-present','ai-ready'):
+        require_idle_ai_connection_role('ai')
+        if not (old_target()/'ai/compose.json').is_file() or not (OLLAMA_HOME/'models').is_dir():
+            raise RuntimeError('Existing AI runtime/models were not found; select AI packages for installation')
+        if action=='ai-ready':
+            ready=request('https://'+C['hosts']['ai']['address']+':8443/readyz',headers={'X-API-Key':S['AI_KEY']},ca=str(old_target()/'ai/certs/ca.crt'),timeout=120)
+            if ready.get('status')!='ready':raise RuntimeError('Existing AI service is not ready; installed models were preserved')
+        return {'existing_ai':True,'models_preserved':True}
     if action in ('healthcheck','reconcile'):
         result=installation_healthcheck()
         if action=='reconcile':

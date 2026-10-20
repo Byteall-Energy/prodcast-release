@@ -44,7 +44,7 @@ class Engine:
         self.report=[]
         self.diagnostics=diagnostics
 
-    def payload(self,role,operation,mode):
+    def payload(self,role,operation,mode,include_files=True):
         secrets=self.vault.data.get('secrets',{}); tls=self.vault.data.get('tls',{})
         if role.startswith('worker'):
             n=f'{int(role[6:]):02}'
@@ -57,7 +57,7 @@ class Engine:
             if role=='db':
                 allowed += [prefix+f'{int(r[6:]):02}' for r in worker_roles(self.c) for prefix in ('PW_W','REDIS_W')]
             certs={'db':['postgres','redis'],'ai':['ai'],'app':['site','license']}[role]
-        files=self.release.for_role(role) if self.release else {}
+        files=self.release.for_role(role) if self.release and include_files else {}
         result=dict(site=self.c,topology=topology_hash(self.c),installation_id=self.vault.data.get('installation_id',''),role=role,operation=operation,mode=mode,
                     previous_operation=getattr(self,'previous_operation',''),
                     version=self.release.version if self.release else '',
@@ -77,6 +77,7 @@ class Engine:
         return result
 
     def run(self,mode):
+        self.reconnect_ai=False
         if mode not in ('check','status','install','update','repair','backup','app-tls','ai','healthcheck'): raise ValueError('Unknown operation')
         if mode in ('install','update','repair','ai','healthcheck') and not self.release: raise ValueError('Select a verified release')
         if mode in ('install','update','repair') and hasattr(self.release,'validate_worker_count'):
@@ -91,7 +92,7 @@ class Engine:
             if mode not in ('check','status') and maintenance_path.exists() and json.loads(maintenance_path.read_text('utf-8')).get('status') in ('running','failed'):
                 raise ValueError('Resume the interrupted backup/restore/reset operation before deploying')
             tls_journal=self.dir/'app-tls-journal.json'
-            if mode in ('install','update','repair','healthcheck') and tls_journal.exists() and json.loads(tls_journal.read_text('utf-8')).get('status') in ('running','failed'):
+            if mode in ('install','update','repair','healthcheck','ai') and tls_journal.exists() and json.loads(tls_journal.read_text('utf-8')).get('status') in ('running','failed'):
                 raise ValueError(tr('Сначала повторите «Применить сертификат на App» для завершения предыдущей операции.'))
             if mode in ('install','update','repair','app-tls') and self.vault.data.get('app_tls'):
                 validate_for_site(self.vault.data['app_tls'],self.c)
@@ -104,10 +105,18 @@ class Engine:
                 core_path=self.dir/'journal.json'
                 core=json.loads(core_path.read_text('utf-8')) if core_path.exists() else {}
                 if core.get('status')!='complete':raise ValueError(tr('Сначала завершите установку основного стека.'))
-                if not self.c.get('install_ai',True) or not core.get('install_ai',True):raise ValueError(tr('Включите AI на вкладке серверов и выполните обновление основного стека для настройки App.'))
+                if not self.c.get('install_ai',True):raise ValueError(tr('Включите AI на вкладке «AI». Отсутствие пакетов не означает отключение установленного AI.'))
                 if self.vault.data.get('topology')!=topology_hash(self.c):raise ValueError('Use the original installation profile')
                 if self.diagnostics:self.diagnostics.protect(self.vault.data)
-                result=self._optional_ai('update',core['operation'])
+                self.reconnect_ai=not core.get('install_ai',True)
+                if self.reconnect_ai:self.log('AI is enabled in the profile but App was previously configured without AI. Restoring only AI DB access and App integration; Workers and AI models are not reset.')
+                from .ai_policy import can_reconnect_existing_ai
+                if self.reconnect_ai and can_reconnect_existing_ai(self.vault,self.dir):
+                    from .ai_connection import reconnect_existing_ai
+                    result=reconnect_existing_ai(self,core['operation'])
+                else:result=self._optional_ai('update',core['operation'],allow_skip=False)
+                if result.get('status')=='complete' and self.reconnect_ai:
+                    core['install_ai']=True;atomic_json(core_path,core)
                 report_path=self.dir/('report-'+core['operation']+'.json')
                 try:
                     report=json.loads(report_path.read_text('utf-8')) if report_path.exists() else {'mode':core['mode'],'operation':core['operation'],'status':'complete','core_status':'complete'}
@@ -115,6 +124,9 @@ class Engine:
                 except (OSError,ValueError):self.log(tr('Результат AI сохранён отдельно; общий отчёт обновить не удалось.'))
                 return result
             if mode in ('install','update','repair'):
+                if mode=='update':
+                    from .ai_policy import preserve_existing_ai
+                    if preserve_existing_ai(self.c,self.vault,self.dir,self.log):self.keep_ai=True
                 if mode=='repair':
                     if self.vault.data.get('topology')!=topology_hash(self.c):raise ValueError('Recovery requires the original installation profile')
                 else:self.vault.initialize(self.c)
@@ -491,6 +503,9 @@ class Engine:
                     db_remote=self.factory('db',self.c['hosts']['db'],self.vault.data.get('ssh',{}).get('db',{}),self.log)
                     db_remote.diagnostics=self.diagnostics;db_remote.probe();db_remote.prepare_stage()
                     db_remote.put_bytes('linux.py',(RESOURCES/'linux.py').read_bytes())
+                    if getattr(self,'reconnect_ai',False):
+                        journal['inflight']='ai-access';atomic_json(path,journal)
+                        db_remote.action(self.payload('db',operation,'check',include_files=False),'ai-access',RESOURCES)
                     journal['inflight']='documents-schema';atomic_json(path,journal);self.log('db: ai-documents')
                     result=db_remote.action(self.payload('db',operation,'check'),'ai-documents',RESOURCES)
                     journal['steps'].append({'action':'documents-schema','result':result});journal.pop('inflight',None);atomic_json(path,journal)
@@ -502,9 +517,14 @@ class Engine:
             app_remote=self.factory('app',self.c['hosts']['app'],self.vault.data.get('ssh',{}).get('app',{}),self.log)
             app_remote.diagnostics=self.diagnostics;app_remote.prepare_stage()
             app_remote.put_bytes('linux.py',(RESOURCES/'linux.py').read_bytes())
+            if getattr(self,'reconnect_ai',False):
+                journal['inflight']='ai-reconnect';atomic_json(path,journal)
+                app_remote.action(self.payload('app',operation,'check',include_files=False),'ai-reconnect',RESOURCES)
             result=app_remote.action(self.payload('app',operation,'check'),'verify-ai',RESOURCES)
             remote.action(payload,'commit',RESOURCES)
             journal.update(status='complete',result=result);journal.pop('inflight',None);atomic_json(path,journal)
+            self.vault.data['ai_installed']=True
+            if hasattr(self.vault,'save'):self.vault.save()
             self.log(tr('AI: установка и проверка ответа из App завершены успешно.'))
             return {'status':'complete','result':result}
         except Exception as error:

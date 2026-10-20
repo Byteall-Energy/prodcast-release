@@ -22,6 +22,7 @@ def fingerprint(engine,role):
                       directory=payload['directory'],activation=payload['activation'],app_tls=payload['app_tls'],
                       images={k:v for k,v in release.images.items() if k!='prodcast-ai'})
     else:settings=dict(hosts={r:h['address'] for r,h in engine.c['hosts'].items()},
+                       install_ai=engine.c.get('install_ai',True),
                        database_images=getattr(release,'offline_spec',{}).get('database_images',{}))
     if not role.startswith('worker'):
         settings['linux_packages']={key:release.assets[name]['sha256'] for key,name in getattr(release,'offline_spec',{}).get('linux_packages',{}).items()}
@@ -50,7 +51,9 @@ def changed_roles(engine,baseline):
     if not baseline:return core_roles(engine.c)
     if baseline.get('schema')!=1 or baseline.get('installation_id')!=engine.vault.data.get('installation_id') or baseline.get('topology')!=topology_hash(engine.c):
         raise ValueError('Component baseline belongs to another profile or is unsupported; restore the original profile and vault.')
-    if set(baseline.get('roles',{}))!=set(core_roles(engine.c)):
+    expected=set(core_roles(engine.c));recorded=set(baseline.get('roles',{}))
+    retired=set(engine.vault.data.get('retired_workers',{}))
+    if expected-recorded or (recorded-expected)-retired:
         raise ValueError('Component baseline does not match the current Worker roster; restore the matching profile or verify the existing installation.')
     return tuple(r for r in core_roles(engine.c) if baseline['roles'][r]['signature']!=fingerprint(engine,r))
 

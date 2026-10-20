@@ -49,6 +49,7 @@ class DesktopWindow:
     def __init__(self,root,controller):
         self.root=root;self.controller=controller;self.state=controller.snapshot()
         self.config=copy.deepcopy(self.state['config']);self.packages=dict(self.state['packages'])
+        self.membership_stamp=self.state.get('membership_stamp')
         self.page='overview';self.role='app';self.setting='general';self.step=0
         self.deploy={'mode':'update' if self.state['installed'] else 'install'}
         self.access={};self.sudo_modes={};self.worker_services=copy.deepcopy(self.state.get('worker_services',{}));self.directory=dict(self.state['directory']);self.activation=dict(self.state['activation'])
@@ -224,7 +225,8 @@ class DesktopWindow:
         for role,mode in self.sudo_modes.items():
             if mode['mode']=='root' and self.config['hosts'][role]['username']!='root':
                 raise ValueError(self.t('Root privileges require SSH username root. Otherwise select a sudo mode.','Для root укажите SSH-пользователя root. Иначе выберите режим sudo.'))
-        self.controller.update({'config':self.config,'packages':self.packages})
+        result=self.controller.update({'config':self.config,'packages':self.packages,'membership_stamp':self.membership_stamp})
+        if result.get('membership_reconciled'):self.local_dirty=False;self.refresh()
 
     def refresh_context(self):
         self.site_picker.configure(values=[x['id'] for x in self.state['sites']]);self.site.set(self.state['site'])
@@ -238,6 +240,8 @@ class DesktopWindow:
 
     def refresh(self,render=True):
         self.state=self.controller.snapshot();self.config=copy.deepcopy(self.state['config']);self.packages=dict(self.state['packages'])
+        self.membership_stamp=self.state.get('membership_stamp')
+        if self.role not in self.config['hosts']:self.role=next((r for r in self.config['hosts'] if r.startswith('worker')),'app')
         self.refresh_context()
         if render:self.render()
 
@@ -610,7 +614,8 @@ class DesktopWindow:
 
 
     def build_ai(self):
-        form=self.group('AI server','Сервер AI');self.check(form,'Include AI in this site','Включить AI для площадки',self.config,'install_ai')
+        form=self.group('AI server','Сервер AI');self.check(form,'Enable App connection to AI','Включить подключение App к AI',self.config,'install_ai')
+        self.note('Stack updates preserve an installed AI and its connection by default. Keep existing AI skips packages, not integration. If a previous update disabled the connection, the AI action restores DB access and App settings without reinstalling models or changing Workers. App services may restart briefly.','Обновление стека сохраняет установленный AI и подключение к нему. «Сохранить существующий AI» пропускает пакеты, а не отключает интеграцию. Если прошлое обновление отключило подключение, действие AI восстановит доступ к БД и настройки App без переустановки моделей и изменения Workers. Возможен краткий перезапуск служб App.')
         self.package_form();self.ai_files()
         self.note('Models ZIP may contain the chat and embedding GGUF files. AI retry is separate from core update.','ZIP моделей может содержать GGUF-файлы чата и эмбеддинга. Повтор AI выполняется отдельно от основного обновления.')
         self.button(self.content,'Install / retry AI','Установить / повторить AI',lambda:self.run('ai'),True)

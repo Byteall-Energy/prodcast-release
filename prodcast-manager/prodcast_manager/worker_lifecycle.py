@@ -6,6 +6,12 @@ from .config import atomic_json, file_lock, topology_hash, validate_membership, 
 from .portable import runtime_config, save_config
 from .workers import binding, read_json
 
+
+def prune_removed_receipt(vault,role):
+    baseline=vault.data.get('deployment_components',{})
+    if baseline.get('installation_id')==vault.data.get('installation_id'):
+        baseline.get('roles',{}).pop(role,None)
+
 JOURNAL = 'worker-action-journal.json'
 
 
@@ -53,6 +59,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
                 vault.data.update(worker_topology_hosts=journal['target']['_worker_topology_hosts'],
                                   worker_hosts=worker_addresses(journal['target']))
                 vault.data.setdefault('retired_workers',{})[role]={'operation':journal['operation'],'address':journal['original']['hosts'][role]['address']}
+                prune_removed_receipt(vault,role)
                 vault.save();save_config(directory,journal['target'])
                 current=runtime_config(directory/'site.json')
         else:
@@ -149,6 +156,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
                 vault.data.update(worker_topology_hosts=journal['target']['_worker_topology_hosts'],
                                   worker_hosts=worker_addresses(journal['target']))
                 vault.data.setdefault('retired_workers',{})[role]={'operation':operation,'address':journal['original']['hosts'][role]['address']}
+                prune_removed_receipt(vault,role)
                 vault.save()
                 save_config(directory, journal['target'])
             step('app', 'maintenance-resume', previous_runtime=journal['app_runtime'])
