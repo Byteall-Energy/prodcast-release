@@ -227,7 +227,7 @@ function Install-Worker {
     $svc=Get-CimInstance Win32_Service -Filter "Name='$service'"
     if($svc -and !$svc.PathName.Contains($installDir)){
         if(!$script:state.install_root -or !$svc.PathName.Contains($script:state.install_root)){throw 'Refusing to replace an unowned service'}
-        if($svc.State -ne 'Stopped'){throw 'Old Worker must be drained and stopped first'}
+        Assert-WorkerStopped
         & sc.exe delete $service | Out-Null; Check-Native 'Remove stopped old service registration'
         for($i=0;$i -lt 30 -and (Get-Service $service -ErrorAction SilentlyContinue);$i++){Start-Sleep -Seconds 1}
         $svc=Get-CimInstance Win32_Service -Filter "Name='$service'"
@@ -275,9 +275,13 @@ function Install-Worker {
     finally{[Array]::Clear($plain,0,$plain.Length);$values.Clear()}
     $svc=Get-Service $service
     if($svc.Status -eq 'Running'){Stop-Service $service; $svc.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(90))}
+    # Only the fully prepared target runtime is allowed to start. The old
+    # service remains disabled throughout the backup/replacement interval.
+    Set-Service -Name $service -StartupType Manual
     & (Join-Path $package 'runtime\Start-Worker.ps1') -InstallDir $installDir -WorkerNumber $number | Out-Host
     $marker=Get-Content -Raw -LiteralPath (Join-Path $installDir 'logs\scheduler-service-ready.json') | ConvertFrom-Json
     if($marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker isolation/TLS readiness failed'}
+    Restore-WorkerStartup
     Set-Field $script:state 'previous_root' $script:state.install_root
     Set-Field $script:state 'install_root' $installDir
     Set-Field $script:state 'pending_root' ''; Save-State
@@ -322,6 +326,36 @@ function Test-ExistingWorker {
     if($siteConfig.worker_number -ne $number -or $siteConfig.postgres_host -ne $p.site.hosts.db.address -or $marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker identity/isolation/TLS readiness mismatch'}
     return @{healthy=$true;service=$service;account=$registration.StartName;path=$candidate;postgres_tls=$true;services_restarted=$false}
 }
+function Get-WorkerProcesses($registration) {
+    if(!$registration.ProcessId){return @()}
+    $all=@(Get-CimInstance Win32_Process)
+    $ids=@([int]$registration.ProcessId)
+    do {
+        $children=@($all | Where-Object {$_.ParentProcessId -in $ids -and $_.ProcessId -notin $ids})
+        $ids+=@($children | ForEach-Object {[int]$_.ProcessId})
+    } while($children.Count)
+    return @($all | Where-Object {$_.ProcessId -in $ids} | ForEach-Object {@{pid=[int]$_.ProcessId;created=[string]$_.CreationDate}})
+}
+function Assert-WorkerStopped {
+    $current=Get-CimInstance Win32_Service -Filter "Name='$service'"
+    if($current -and ($current.State -ne 'Stopped' -or $current.StartMode -ne 'Disabled' -or $current.ProcessId)){
+        throw 'Worker must be stopped and disabled throughout replacement; no service registration was removed'
+    }
+    foreach($tracked in @($script:state.worker_stop.processes)){
+        if(!$tracked){continue}
+        $live=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$tracked.pid)
+        if($live -and [string]$live.CreationDate -eq $tracked.created){throw 'Owned Worker process tree has not fully exited; replacement refused'}
+    }
+}
+function Restore-WorkerStartup {
+    $saved=$script:state.worker_stop
+    if(!$saved -or $saved.operation -ne $p.operation){return}
+    $mode=switch($saved.start_mode){'Disabled'{'Disabled'};'Manual'{'Manual'};default{'Automatic'}}
+    Set-Service -Name $service -StartupType $mode
+    if($mode -eq 'Automatic' -and $saved.delayed_auto){
+        & sc.exe config $service start= delayed-auto | Out-Null;Check-Native 'Restore Worker startup mode'
+    }
+}
 function Stop-OwnedWorker {
     # Caller either resets explicitly or has already paused/drained App jobs.
     # Prevent SCM recovery from racing maintenance.
@@ -332,15 +366,24 @@ function Stop-OwnedWorker {
         if($candidate -and $registration.PathName.Trim('"') -eq (Join-Path $candidate ($service+'.exe'))){$registeredOwner=$true}
     }
     if(!$registeredOwner){throw 'Refusing to stop an unowned Worker service'}
+    $processes=Get-WorkerProcesses $registration
+    $saved=$script:state.worker_stop
+    if(!$saved -or $saved.operation -ne $p.operation){
+        $delayed=(Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\'+$service) -Name DelayedAutostart -ErrorAction SilentlyContinue).DelayedAutostart
+        $saved=@{operation=$p.operation;start_mode=$registration.StartMode;delayed_auto=[bool]$delayed;processes=@()}
+    }
+    $saved.processes=@($saved.processes)+@($processes)
+    Set-Field $script:state 'worker_stop' $saved;Save-State
     Set-Service -Name $service -StartupType Disabled
+    Write-Host 'Worker disabled for maintenance; automatic recovery cannot restart it during replacement.'
     try {Stop-Service -Name $service -ErrorAction Stop} catch {Write-Host 'Waiting for the managed Worker to stop.'}
     for($i=0;$i -lt 45;$i++){
         $current=Get-CimInstance Win32_Service -Filter "Name='$service'"
-        if(!$current -or $current.State -eq 'Stopped'){return}
+        try {Assert-WorkerStopped;Write-Host 'Worker service and tracked process tree are stopped; service remains disabled.';return} catch {}
         Start-Sleep -Seconds 2
     }
     $current=Get-CimInstance Win32_Service -Filter "Name='$service'"
-    if(!$current -or $current.State -eq 'Stopped'){return}
+    if(!$current -or $current.State -eq 'Stopped'){Assert-WorkerStopped;return}
     # A broken wrapper may refuse STOP. Terminate only the owned service tree,
     # after checking the live PID executable against this installation's roots.
     $process=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$current.ProcessId)
@@ -355,6 +398,7 @@ function Stop-OwnedWorker {
     & taskkill.exe /PID $current.ProcessId /T /F | Out-Null
     Check-Native 'Terminate owned Worker for maintenance'
     (Get-Service -Name $service).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))
+    Assert-WorkerStopped
 }
 function Dispatch {
     switch($p.action){
@@ -475,8 +519,7 @@ function Dispatch {
         }
         'stop' {
             Stop-OwnedWorker
-            Set-Service $service -StartupType Manual
-            return @{stopped=$true}
+            return @{stopped=$true;disabled=$true;live_state_verified=$true}
         }
         'backup' {
             if(!$script:state.install_root){throw 'No managed Worker installation'}
@@ -543,7 +586,7 @@ try{
             $result=Repair-Worker
             Set-Field $script:state.steps $key $result; Save-State
         }
-        elseif($done -and $p.action -notin @('claim','commit','status','repair','verify','healthcheck','reconcile','service-preflight')){$result=$done.Value}
+        elseif($done -and $p.action -notin @('claim','commit','status','repair','verify','healthcheck','reconcile','service-preflight','stop','maintenance-stop')){$result=$done.Value}
         else{
             $result=Dispatch
             if($p.mode -in @('install','update','repair','add-workers')){Set-Field $script:state.steps $key $result; Save-State}
@@ -552,7 +595,11 @@ try{
     if($transcript){Stop-Transcript | Out-Null;$transcript=$false}
     Write-Output ('MANAGER_RESULT:'+($result | ConvertTo-Json -Depth 20 -Compress))
 }catch{
-    if($transcript){Write-Output $_.Exception.Message; Write-Output $_.ScriptStackTrace; Stop-Transcript | Out-Null}
+    $failure=$_
+    if($p.action -in @('install','repair') -and $script:state.worker_stop.operation -eq $p.operation){
+        try{Stop-OwnedWorker}catch{Write-Host 'Worker could not be confirmed stopped after install failure; inspect the operation log before retrying.'}
+    }
+    if($transcript){Write-Output $failure.Exception.Message; Write-Output $failure.ScriptStackTrace; Stop-Transcript | Out-Null}
     # Third-party error details stay on the server; never echo credentials or command bodies.
     Write-Output 'MANAGER_ERROR:Worker action failed. Inspect C:\ProgramData\ProdCastManager\operation.log and resume the same operation.'
     exit 1
