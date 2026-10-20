@@ -841,8 +841,11 @@ def migrate():
         config=P['directory']
         code="import os,django\nos.environ.setdefault('DJANGO_SETTINGS_MODULE','mainapp.settings')\ndjango.setup()\nfrom django.db import transaction\nfrom apiapp.domains.identity.models import DirectoryConfiguration\nwith transaction.atomic():\n obj,_=DirectoryConfiguration.objects.get_or_create(pk=1)\n for key,value in "+repr(config)+".items(): setattr(obj,key,value)\n obj.full_clean()\n obj.save()\n"
         app_python(code)
+    # Refresh the installed plugin catalog on upgrades as well as first install.
+    dc('app','run','--rm','--no-deps','--pull','never','--entrypoint','python',
+       'admin-service','manage.pyc','sync_integration_plugins','--package','prodcast-petex-plugins')
     if not ST.get('initialized'):
-        for cmd in (['init_data'],['load_units'],['sync_integration_plugins','--package','prodcast-petex-plugins']):
+        for cmd in (['init_data'],['load_units']):
             dc('app','run','--rm','--no-deps','--pull','never','--entrypoint','python','admin-service','manage.pyc',*cmd)
         script="import os,django\nos.environ.setdefault('DJANGO_SETTINGS_MODULE','mainapp.settings')\ndjango.setup()\nfrom django.contrib.auth import get_user_model\nU=get_user_model()\nv="+repr({'username':C['admin_username'],'email':C['admin_email'],'password':S['ADMIN_PASSWORD']})+"\nif not U.objects.filter(username=v['username']).exists(): U.objects.create_superuser(**v)\n"
         dc('app','run','--rm','--no-deps','-T','--pull','never','--entrypoint','python','admin-service','-',input=script)

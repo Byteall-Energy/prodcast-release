@@ -416,3 +416,39 @@ def test_migration_applies_directory_after_database_migration(agent,monkeypatch)
     assert calls[0][1][-1]=='migrate'
     code=calls[1][1];compile(code,'apply-directory','exec')
     assert 'DirectoryConfiguration' in code and 'full_clean()' in code and "'mode': 'disabled'" in code
+
+
+@pytest.mark.parametrize('initialized',[False,True])
+def test_migration_syncs_petex_on_install_update_and_retry(agent,monkeypatch,initialized):
+    calls=[];agent.ST['initialized']=initialized
+    monkeypatch.setattr(agent,'dc',lambda *a,**kw:calls.append(a))
+    for _ in range(2):
+        calls.clear()
+        assert agent.migrate()=={'migrations':True}
+        assert calls[0][-1]=='migrate'
+        sync=[call for call in calls if 'sync_integration_plugins' in call]
+        assert len(sync)==1
+        assert sync[0]==('app','run','--rm','--no-deps','--pull','never',
+                         '--entrypoint','python','admin-service','manage.pyc',
+                         'sync_integration_plugins','--package','prodcast-petex-plugins')
+        assert any('init_data' in call for call in calls) is (not initialized)
+        assert any('load_units' in call for call in calls) is (not initialized)
+        assert agent.ST['initialized'] is True
+        initialized=True
+
+
+@pytest.mark.parametrize('initialized',[False,True])
+@pytest.mark.parametrize('failed_command',['migrate','sync_integration_plugins'])
+def test_migration_failure_stops_install_or_update(agent,monkeypatch,initialized,failed_command):
+    calls=[];agent.ST['initialized']=initialized
+    def dc(*args,**kwargs):
+        calls.append(args)
+        if failed_command in args:
+            raise RuntimeError('migration step failed')
+    monkeypatch.setattr(agent,'dc',dc)
+    with pytest.raises(RuntimeError,match='migration step failed'):
+        agent.migrate()
+    assert failed_command in calls[-1]
+    assert agent.ST['initialized'] is initialized
+    if failed_command=='migrate':
+        assert not any('sync_integration_plugins' in call for call in calls)
