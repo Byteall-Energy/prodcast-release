@@ -45,10 +45,13 @@ def save_receipt(engine,roles=None,previous=None):
 
 
 def changed_roles(engine,baseline):
+    # Legacy profiles can update immediately using the traditional full scope.
+    # Never invent unchanged-component receipts from the new target package.
+    if not baseline:return core_roles(engine.c)
     if baseline.get('schema')!=1 or baseline.get('installation_id')!=engine.vault.data.get('installation_id') or baseline.get('topology')!=topology_hash(engine.c):
-        raise ValueError('Run Verify existing installation with its exact installed release before updating.')
+        raise ValueError('Component baseline belongs to another profile or is unsupported; restore the original profile and vault.')
     if set(baseline.get('roles',{}))!=set(core_roles(engine.c)):
-        raise ValueError('Component baseline does not match the current Worker roster; run the installation healthcheck.')
+        raise ValueError('Component baseline does not match the current Worker roster; restore the matching profile or verify the existing installation.')
     return tuple(r for r in core_roles(engine.c) if baseline['roles'][r]['signature']!=fingerprint(engine,r))
 
 
@@ -148,12 +151,12 @@ def update_actions(changed):
 def selective_update(e):
     from .engine import RESOURCES
     baseline=e.vault.data.get('deployment_components',{})
-    if not baseline:raise ValueError('No verified component baseline. Select the installed complete release and run Verify existing installation first; unchanged services will not be guessed or reinstalled.')
+    if not baseline:raise ValueError('Component update receipt is missing. Restore the original vault to resume this scoped operation; a new legacy update does not require healthcheck.')
     changed=changed_roles(e,baseline);path=e.dir/'journal.json'
     prior=json.loads(path.read_text('utf-8')) if path.exists() else {}
     pending=prior.get('status') in ('running','failed') and prior.get('selective')
     if prior.get('status') in ('running','failed') and not pending:
-        raise ValueError('Finalize the interrupted installation with its exact release using the installation healthcheck before updating.')
+        raise ValueError('Resume or stop the pending core operation before starting a different component update.')
     if pending and (prior.get('manifest')!=e.release.digest or prior.get('changed_roles')!=list(changed)):
         raise ValueError('Resume this component update with its original package, settings and scope.')
     operation=prior['operation'] if pending else uuid.uuid4().hex

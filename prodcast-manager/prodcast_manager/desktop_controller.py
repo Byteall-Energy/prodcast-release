@@ -329,8 +329,11 @@ class DesktopController:
             from .component_updates import changed_roles,update_actions
             release=Release(packages['release'],directory/'cache',packages['trusted'],validate_ai=False)
             engine=Engine(config,vault,release,directory,self.emit,diagnostics=self.log)
-            changed=changed_roles(engine,vault.data.get('deployment_components',{}))
-            return dict(changed=list(changed),unchanged=[r for r in config['hosts'] if r!='ai' and r not in changed],actions=update_actions(changed),ai=packages['ai_action'])
+            journal=self._json(directory/'journal.json')
+            baseline=vault.data.get('deployment_components',{})
+            legacy=not baseline or (journal.get('status') in ('running','failed') and not journal.get('selective'))
+            changed=changed_roles(engine,{} if legacy else baseline)
+            return dict(changed=list(changed),unchanged=[r for r in config['hosts'] if r!='ai' and r not in changed],actions=update_actions(changed),ai=packages['ai_action'],update_strategy='traditional_full_stack' if legacy else 'changed_components',healthcheck_required=False)
         return self._job('update-preview',preview)
 
     @staticmethod

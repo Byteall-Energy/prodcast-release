@@ -457,7 +457,9 @@ class DesktopWindow:
             else:self.note('Omitting AI packages is intentional. No new AI deployment will be left pending.','Пропуск AI-пакетов намеренный. Новая незавершённая операция AI не создаётся.')
         else:
             form=self.group('Review before starting','Обзор перед запуском')
-            if self.deploy['mode']=='update':self.button(form,'Preview changed services','Показать изменённые службы',lambda:self.start('update_preview'))
+            if self.deploy['mode']=='update':
+                self.button(form,'Preview changed services','Показать изменённые службы',lambda:self.start('update_preview'))
+                self.note('Healthcheck is optional. Older profiles without component receipts use a full-stack update, including all Workers. After success, future updates can skip unchanged components. Preview the scope before starting.','Проверка здоровья необязательна. Для старого профиля без данных компонентов выполняется обновление всего стека, включая всех Workers. После успеха следующие обновления смогут пропускать неизменённые компоненты. Перед запуском проверьте состав обновления.')
             form.addRow(self.t('Release','Релиз'),self.label(self.packages['release'] or '—'))
             for role,host in self.config['hosts'].items():form.addRow(role,self.label(host['address'] or self.t('Required','Обязательно')))
             self.note('Installation/update checks ownership, access and package compatibility before mutation. Updates stop services. Database rollback is not automatic.','Перед изменениями проверяются владельцы, доступ и совместимость пакета. Обновление останавливает службы. Автоотката БД нет.')

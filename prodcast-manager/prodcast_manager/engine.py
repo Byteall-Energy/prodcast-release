@@ -132,7 +132,12 @@ class Engine:
             if self.diagnostics:self.diagnostics.protect(self.vault.data)
             if mode=='update' and getattr(self.release,'assets',None):
                 from .component_updates import selective_update
-                return selective_update(self)
+                path=self.dir/'journal.json'
+                prior=json.loads(path.read_text('utf-8')) if path.exists() else {}
+                legacy_pending=prior.get('status') in ('running','failed') and not prior.get('selective')
+                if (prior.get('selective') and prior.get('status') in ('running','failed')) or (self.vault.data.get('deployment_components') and not legacy_pending):
+                    return selective_update(self)
+                self.log('No component baseline or a legacy operation is pending: using the traditional full-stack update. Healthcheck is optional. App, DB and all Workers are in scope; normal ownership, compatibility and resume checks still apply.')
             return self._run(mode)
 
     def _apply_app_tls(self):
@@ -359,6 +364,9 @@ class Engine:
             if mutating:
                 for role,r in self.remotes.items():
                     for f in self.release.for_role(role).values(): r.put(f)
+            if mode=='update' and getattr(self.release,'assets',None):
+                for role in worker_roles(self.c):
+                    self.remotes[role].action(self.payload(role,operation,mode),'service-preflight',RESOURCES)
             for role,action in plan(mode,False,worker_roles(self.c))[len(core_roles(self.c)):]:
                 self.log(f'{role}: {action}')
                 if mutating:

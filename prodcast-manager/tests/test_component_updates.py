@@ -82,10 +82,32 @@ def test_unchanged_release_has_no_mutating_core_actions(deployed):
     assert all(v['version']=='v0.3' for v in e.test_versions.values())
 
 
-def test_missing_baseline_does_not_guess_or_restart_anything(deployed):
+def test_missing_baseline_uses_traditional_update_without_healthcheck(deployed):
     e=deployed;e.vault.data.pop('deployment_components');change(e,'app')
-    with pytest.raises(ValueError,match='baseline'):e.run('update')
-    assert not e.test_calls
+    e.run('update')
+    assert not any(a in ('healthcheck','reconcile') for r,a,p in e.test_calls)
+    assert any(r=='worker1' and a=='install' for r,a,p in e.test_calls)
+    assert e.vault.data['deployment_components']['roles']['app']['manifest']=='target-release'
+
+
+def test_legacy_update_checks_service_credentials_before_stopping(deployed):
+    e=deployed;e.vault.data.pop('deployment_components');change(e,'app')
+    e.test_remote.fail=('worker1','service-preflight')
+    with pytest.raises(RuntimeError):e.run('update')
+    assert not any(a in ('claim','stop','pause','install') for r,a,p in e.test_calls)
+
+
+def test_missing_baseline_preview_shows_full_scope(deployed):
+    assert changed_roles(deployed,{})==core_roles(deployed.c)
+
+
+def test_pending_legacy_update_keeps_original_resume_path_without_healthcheck(deployed):
+    e=deployed
+    journal=json.loads((e.dir/'journal.json').read_text());journal.update(status='failed',mode='update')
+    (e.dir/'journal.json').write_text(json.dumps(journal))
+    e._run=Mock(return_value={'resumed':True})
+    assert e.run('update')=={'resumed':True}
+    e._run.assert_called_once_with('update')
 
 
 def test_service_credential_failure_is_before_any_stop(deployed):
