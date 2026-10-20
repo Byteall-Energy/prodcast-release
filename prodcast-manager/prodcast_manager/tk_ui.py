@@ -51,7 +51,7 @@ class DesktopWindow:
         self.config=copy.deepcopy(self.state['config']);self.packages=dict(self.state['packages'])
         self.page='overview';self.role='app';self.setting='general';self.step=0
         self.deploy={'mode':'update' if self.state['installed'] else 'install'}
-        self.access={};self.sudo_modes={};self.directory=dict(self.state['directory']);self.activation=dict(self.state['activation'])
+        self.access={};self.sudo_modes={};self.worker_services=copy.deepcopy(self.state.get('worker_services',{}));self.directory=dict(self.state['directory']);self.activation=dict(self.state['activation'])
         self.certificate={};self.maintenance={};self.result_seen=None;self.fields={};self.mutable=[]
         self.operation='';self.local_dirty=False;self.after_id=None;self.closed=False;self.traces=[]
         root.title('ProdCast Manager '+__version__);root.geometry('1180x850');root.minsize(980,680)
@@ -123,7 +123,7 @@ class DesktopWindow:
                 try:self.controller.unlock_legacy({'password':password});return fn()
                 except Exception as error:self.message('Credentials',self.controller.log.redact(str(error)),True)
         except Exception as error:
-            self.controller.log.protect({'directory':self.directory,'activation':self.activation,'ssh':self.access})
+            self.controller.log.protect({'directory':self.directory,'activation':self.activation,'ssh':self.access,'worker_services':self.worker_services})
             self.message(self.t('Action needs attention','Требуется внимание'),self.controller.log.redact(str(error)),True)
 
     def message(self,title,text,error=False):
@@ -269,6 +269,7 @@ class DesktopWindow:
             if answer:self.sync();self.controller.save_draft()
         self.controller.dispatch(action,payload);self.access={};self.sudo_modes={};self.certificate={};self.local_dirty=False
         self.state=self.controller.snapshot();self.directory=dict(self.state['directory']);self.activation=dict(self.state['activation'])
+        self.worker_services=copy.deepcopy(self.state.get('worker_services',{}))
         self.step=0;self.refresh()
 
     def start(self,action,payload=None,sync=True):
@@ -336,6 +337,15 @@ class DesktopWindow:
         self.button(self.content,'Configure servers','Настроить серверы',lambda:self.navigate('servers'),True,False)
         self.button(self.content,'Check remote status','Проверить состояние VM',lambda:self.run('status'))
         self.button(self.content,'Operations and recovery','Операции и восстановление',lambda:self.navigate('operations'),mutable=False)
+        form=self.group('Verify existing installation / recover failed completion','Проверка существующей установки / завершение после ошибки')
+        self.edit(form,'Exact installed complete release ZIP','ZIP точного установленного релиза',self.packages,'release',browse='zip')
+        self.edit(form,'Expected manifest SHA256','Ожидаемый SHA256 манифеста',self.packages,'trusted')
+        self.button(form,'Healthcheck and finalize…','Проверить здоровье и завершить…',self.healthcheck,True)
+        self.note('Checks all core components without restarting or reinstalling them. If all checks pass, only ownership/completion records are reconciled; AI installation and updates become available. Use the original profile and exact installed release.','Проверяет основной стек без перезапуска и переустановки. При успехе согласуются только записи владельцев/завершения; становятся доступны AI и обновления. Нужны исходный профиль и точный установленный релиз.')
+
+    def healthcheck(self):
+        if self.confirm(self.t('Verify existing installation','Проверить существующую установку'),self.t('Verify all core components and finalize the interrupted journal only if they are healthy? No service is restarted, reinstalled or assigned a different account.','Проверить все основные компоненты и завершить журнал только при успешной проверке? Службы не перезапускаются, не переустанавливаются и не меняют учётные записи.')):
+            self.start('run',{'mode':'healthcheck'})
 
     def build_servers(self):
         if self.role not in self.config['hosts']:self.role='app'
@@ -395,6 +405,26 @@ class DesktopWindow:
         self.button(form,'Clear saved access','Очистить доступ',self.clear_access)
         self.button(form,'Retrieve SSH fingerprint…','Получить SSH-отпечаток…',lambda:self.start('scan_server',{'role':self.role}))
         self.button(form,'Test selected server','Проверить выбранный сервер',lambda:self.start('check_server',{'role':self.role}))
+        if self.role.startswith('worker'):
+            account=self.worker_services.setdefault(self.role,{'mode':'preserve','account':''})
+            form=self.group('Worker Windows service account (not SSH)','Учётная запись службы Worker (не SSH)')
+            self.combo(form,'Service logon','Вход службы',account,'mode',[('preserve',self.t('Preserve existing; managed account for a new service','Сохранить существующую; управляемая для новой службы')),('custom',self.t('Dedicated local/domain service account','Выделенная локальная/доменная учётная запись')),('managed',self.t('Explicitly use local prodcast-managed','Явно использовать локальную prodcast-managed'))],True)
+            self.fields['service_mode']=self.fields.pop('mode')
+            if account.get('mode')=='custom':
+                self.edit(form,'Service account','Учётная запись службы',account,'account','DOMAIN\\svc-prodcast or worker@example.com')
+                ssh_password_field=self.fields.get('password')
+                self.edit(form,'Service password','Пароль службы',account,'password',self.t('Stored; empty keeps password','Сохранён; пустое поле оставляет пароль') if account.get('password_stored') else '',True)
+                self.fields['service_password']=self.fields.pop('password')
+                if ssh_password_field is not None:self.fields['password']=ssh_password_field
+            self.button(form,'Save service account settings…','Сохранить настройки учётной записи…',self.save_worker_service,True)
+            self.note('Credentials are encrypted separately from SSH. Use a dedicated non-administrator account with Log on as a service granted by IT. Saving does not change a running service; changes apply only when this Worker is explicitly installed/updated/repaired. Preserve never silently replaces an existing account.','Данные шифруются отдельно от SSH. Используйте выделенную непривилегированную запись с правом «Вход в качестве службы», выданным IT. Сохранение не меняет работающую службу; настройки применяются только при установке/обновлении/ремонте этого Worker. Сохранение существующей записи не подменяет её автоматически.')
+
+    def save_worker_service(self):
+        value={k:v for k,v in self.worker_services[self.role].items() if k!='password_stored'}
+        if not value.get('password'):value.pop('password',None)
+        if value.get('mode')!='preserve' and not self.confirm(self.t('Service account change','Изменение учётной записи службы'),self.t('Save this explicit service logon choice? It applies only during a reviewed action on this Worker.','Сохранить явный выбор учётной записи? Он применяется только при подтверждённой операции с этим Worker.')):return
+        self.controller.worker_service_save(dict(value,role=self.role))
+        self.worker_services[self.role]=self.controller.snapshot()['worker_services'][self.role];self.render()
 
     def update_server_row(self,role):
         host=self.config['hosts'][role]
@@ -427,6 +457,7 @@ class DesktopWindow:
             else:self.note('Omitting AI packages is intentional. No new AI deployment will be left pending.','Пропуск AI-пакетов намеренный. Новая незавершённая операция AI не создаётся.')
         else:
             form=self.group('Review before starting','Обзор перед запуском')
+            if self.deploy['mode']=='update':self.button(form,'Preview changed services','Показать изменённые службы',lambda:self.start('update_preview'))
             form.addRow(self.t('Release','Релиз'),self.label(self.packages['release'] or '—'))
             for role,host in self.config['hosts'].items():form.addRow(role,self.label(host['address'] or self.t('Required','Обязательно')))
             self.note('Installation/update checks ownership, access and package compatibility before mutation. Updates stop services. Database rollback is not automatic.','Перед изменениями проверяются владельцы, доступ и совместимость пакета. Обновление останавливает службы. Автоотката БД нет.')

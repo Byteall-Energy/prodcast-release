@@ -1049,6 +1049,46 @@ else: raise RuntimeError('Queues did not drain; manual review required; no jobs 
     code=code.replace('WORKER_PREFIXES',repr(tuple('prodcast-worker-'+n+'@' for n in worker_numbers())))
     app_python(code,True); return {'queues':'drained'}
 
+
+def selected_worker_consumers(resume=False):
+    roles=P.get('changed_workers',[])
+    if not roles or any(not re.fullmatch(r'worker(?:[1-9]|1[0-6])',r) or r not in C['hosts'] for r in roles):
+        raise RuntimeError('Invalid selected Worker drain scope')
+    code="""import time
+from mainapp.celery import app
+prefixes=PREFIXES
+queues=('workflows','workflows_data','scenarios')
+nodes=app.control.inspect(timeout=15).active_queues() or {}
+selected=[]
+for prefix in prefixes:
+ matches=[name for name in nodes if name.startswith(prefix)]
+ assert len(matches)==1, 'Selected Worker absent/duplicate'
+ selected.append(matches[0])
+def consumers(resume):
+ for node in selected:
+  for queue in queues:
+   result=app.control.broadcast('add_consumer' if resume else 'cancel_consumer',arguments={'queue':queue},destination=[node],reply=True,timeout=15)
+   assert any('ok' in item.get(node,{}) for item in result), 'Worker consumer control not confirmed'
+if RESUME:
+ consumers(True)
+else:
+ try:
+  consumers(False)
+  for attempt in range(60):
+   check=app.control.inspect(destination=selected,timeout=15)
+   replies=[check.active(),check.reserved(),check.scheduled()]
+   assert all(reply is not None and all(node in reply for node in selected) for reply in replies), 'Selected Worker did not respond'
+   if not any(reply[node] for reply in replies for node in selected):break
+   time.sleep(5)
+  else:raise RuntimeError('Selected Worker jobs have not drained; no jobs were discarded')
+ except Exception:
+  consumers(True)
+  raise
+"""
+    code=code.replace('PREFIXES',repr(tuple('prodcast-worker-'+f'{int(r[6:]):02}'+'@' for r in roles))).replace('RESUME',repr(resume))
+    app_python(code,True)
+    return {'selected_workers':roles,'consumers_resumed':resume,'app_restarted':False}
+
 def backup():
     folder=STATE/'backups'/P['operation']; folder.mkdir(parents=True,exist_ok=True); folder.chmod(0o700)
     role=P['role']
@@ -1124,6 +1164,41 @@ def database_ready():
     if 'PONG' not in pong:raise RuntimeError('Redis is not ready after recovery')
 
 
+def installation_healthcheck():
+    """Read-only readiness of the expected runtime, not a reinstall/repair."""
+    if not ST or ST.get('operation') not in ('',None,P['operation']) or ST.get('maintenance'):
+        raise RuntimeError('Healthcheck ownership conflict')
+    role=P['role'];steps=ST.get('steps',{})
+    if ST.get('version')!=P['version'] or ST.get('manifest')!=P['manifest']:
+        required=('install',) if role=='db' else ('configure','migrate','start')
+        if ST.get('operation')!=P['operation'] or not all(P['operation']+':'+step in steps for step in required):
+            raise RuntimeError('Expected release was not fully installed; healthcheck will not declare an older runtime complete')
+    if role=='db':
+        require_database_data()
+        if not {'postgres','redis'}<=healthy_services('db'):raise RuntimeError('Database services are not healthy')
+        database_ready()
+        images={'postgres':P.get('offline',{}).get('database_images',{}).get('postgres',{}).get('tag',PG),
+                'redis':P.get('offline',{}).get('database_images',{}).get('redis',{}).get('tag',REDIS)}
+    elif role=='app':
+        configured=[value for key,value in ST.get('step_tls',{}).items() if key.endswith(':configure')]
+        if not configured or configured[-1]!=tls_revision():raise RuntimeError('Saved App configuration differs from deployed settings; restore the installed settings before reconciliation')
+        required=set(APIS+['frontend','gateway','celery-worker','celery-beat'])
+        if not required<=healthy_services('app'):raise RuntimeError('App services (including scheduler) are not all healthy; no services were started by this check')
+        images={service:P['images']['prodcast-backend']['transport_tag'] for service in APIS+['celery-worker','celery-beat']}
+        images.update(frontend=P['images']['prodcast-frontend']['transport_tag'],gateway=P['images']['prodcast-gateway']['transport_tag'])
+        verify()
+        if not P.get('external_activation') and not {'api','license-proxy'}<=healthy_services('license'):
+            raise RuntimeError('License services are not healthy')
+    else:raise RuntimeError('Unsupported core healthcheck role')
+    # A healthy old container is not proof that the selected release is running.
+    for service,image in images.items():
+        expected=run(['docker','image','inspect','--format','{{.Id}}',image]).strip()
+        ids=dc(role,'ps','-q',service).split()
+        if len(ids)!=1 or run(['docker','inspect','--format','{{.Image}}',ids[0]]).strip()!=expected:
+            raise RuntimeError(service+': running image does not match the selected installed release')
+    return {'healthy':True,'version':P['version'],'manifest':P['manifest'],'services_restarted':False}
+
+
 def repair():
     if ST.get('version')!=P['version'] or ST.get('manifest')!=P['manifest']:
         raise RuntimeError('Recovery requires the exact installed release and original profile')
@@ -1144,6 +1219,11 @@ def repair():
 
 def dispatch():
     action=P['action']; role=P['role']
+    if action in ('healthcheck','reconcile'):
+        result=installation_healthcheck()
+        if action=='reconcile':
+            ST.update(version=P['version'],manifest=P['manifest'],operation='');save()
+        return result
     if action.startswith('worker-retire-'):
         from worker_lifecycle_linux import dispatch as lifecycle_dispatch
         return lifecycle_dispatch(sys.modules[__name__])
@@ -1169,6 +1249,8 @@ def dispatch():
     if action=='beat': return restore_containers('app',('celery-beat',))
     if action=='pause': return pause()
     if action=='drain': return drain()
+    if action=='drain-workers':return selected_worker_consumers(False)
+    if action=='resume-workers':return selected_worker_consumers(True)
     if action=='stop':
         current_dc('app','stop')
         if not P.get('external_activation') and (old_target()/'license').is_dir():current_dc('license','stop')
@@ -1227,7 +1309,7 @@ def main():
             key=P['operation']+':'+P['action']
             with (STATE/'operation.log').open('a') as log:
                 LOG=log
-                try:cached=key in ST.get('steps',{}) and P['action'] not in ('status','claim','verify','commit') and cached_runtime_present()
+                try:cached=key in ST.get('steps',{}) and P['action'] not in ('status','claim','verify','commit','healthcheck','reconcile') and cached_runtime_present()
                 except (RuntimeError,OSError,ValueError):cached=False
                 if cached:
                     result=ST['steps'][key]

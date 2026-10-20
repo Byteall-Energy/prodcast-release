@@ -95,6 +95,7 @@ class DesktopController:
                         installed=installed, identity_bound=bool(vault.get('topology')), active=self.active['id'] if self.active else None,
                         installed_workers=list(worker_roles(runtime_config(self.directory / 'site.json'))) if (self.directory / 'site.json').exists() else [],
                         credentials={r:{k:bool(v) for k,v in a.items()} for r,a in vault.get('ssh',{}).items()},
+                        worker_services={r:{**{k:v for k,v in account.items() if k!='password'},'password_stored':bool(account.get('password'))} for r,account in vault.get('worker_services',{}).items()},
                         directory=public_directory, activation=activation,
                         certificate=dict(info=tls['info'],url=tls['url']) if tls else None,
                         installation_id=vault.get('installation_id'), pending=pending_operations(self.directory),
@@ -225,6 +226,19 @@ class DesktopController:
         atomic_json(self.data / 'ui.json',dict(language=self.language))
         return {'saved':True}
 
+    def worker_service_save(self,payload):
+        self._idle();role=payload['role']
+        if role not in worker_roles(self.config):raise ValueError('Select a configured Worker')
+        mode=payload.get('mode','preserve');account=payload.get('account','').strip()
+        if mode not in ('preserve','managed','custom'):raise ValueError('Unsupported Worker service account mode')
+        if mode=='custom' and (not re.fullmatch(r'[A-Za-z0-9_.@\\$-]{1,160}',account) or not ('\\' in account or '@' in account)):
+            raise ValueError('Use DOMAIN\\user, user@domain or COMPUTER\\user for the service account')
+        vault=self._vault();old=vault.data.get('worker_services',{}).get(role,{})
+        password=payload.get('password',old.get('password','') if old.get('account')==account else '')
+        if not isinstance(password,str) or any(c in password for c in '\r\n\x00'):raise ValueError('Invalid service-account password')
+        vault.data.setdefault('worker_services',{})[role]=dict(mode=mode,account=account if mode=='custom' else '',password=password if mode=='custom' else '')
+        self.log.protect(vault.data);vault.save();return {'saved':True,'applied':False}
+
     def emit(self, text):
         clean = self.log.append(rendered(text))
         item = getattr(self.local,'operation',None)
@@ -309,6 +323,16 @@ class DesktopController:
             return dict(version=release.version,manifest=release.digest,minimum_manager=management.get('minimum_manager'),upgrade_from=management.get('upgrade_from',[]))
         return self._job('verify-package',run)
 
+    def update_preview(self,payload=None):
+        self._idle();config=validate(copy.deepcopy(self.config),True);vault=self._vault();packages=dict(self.packages);directory=self.directory
+        def preview():
+            from .component_updates import changed_roles,update_actions
+            release=Release(packages['release'],directory/'cache',packages['trusted'],validate_ai=False)
+            engine=Engine(config,vault,release,directory,self.emit,diagnostics=self.log)
+            changed=changed_roles(engine,vault.data.get('deployment_components',{}))
+            return dict(changed=list(changed),unchanged=[r for r in config['hosts'] if r!='ai' and r not in changed],actions=update_actions(changed),ai=packages['ai_action'])
+        return self._job('update-preview',preview)
+
     @staticmethod
     def _signature(config, secrets, key):
         value = dict(config={k:v for k,v in config.items() if k not in ('hosts','_worker_topology_hosts')},
@@ -318,20 +342,22 @@ class DesktopController:
     def run(self, payload):
         self._idle()
         mode = payload['mode']
-        if mode not in ('install','update','repair','ai','status','check','backup','app-tls'): raise ValueError('Unsupported operation')
+        if mode not in ('install','update','repair','ai','status','check','backup','app-tls','healthcheck'): raise ValueError('Unsupported operation')
         config = self._prepare(); validate(config,True)
         vault = self._vault(); packages = dict(self.packages); directory = self.directory
-        needs_release = mode in ('install','update','repair','ai')
+        needs_release = mode in ('install','update','repair','ai','healthcheck')
         if needs_release and not packages['release']: raise ValueError('Select the complete release first')
         def perform():
             keep_ai = mode == 'update' and packages.get('ai_action') == 'keep'
             release = Release(packages['release'],directory / 'cache',packages['trusted'],validate_ai=False,
                               model_path='' if keep_ai else packages['ai_model'],ollama_path='' if keep_ai else packages['ai_ollama']) if needs_release else None
-            result = Engine(config,vault,release,directory,self.emit,diagnostics=self.log).run(mode)
-            if mode in ('install','update') and self._json(directory / 'journal.json').get('status') == 'complete':
+            engine=Engine(config,vault,release,directory,self.emit,diagnostics=self.log)
+            engine.keep_ai=keep_ai
+            result=engine.run(mode)
+            if mode in ('install','update','healthcheck') and self._json(directory / 'journal.json').get('status') == 'complete':
                 key = (directory / 'secrets.key').read_text('ascii').strip()
                 atomic_json(directory / 'ui-deployed.json',dict(version=release.version,manifest=release.digest,signature=self._signature(config,vault.data,key)))
-            return {'mode':mode,'finished':True,'pending':pending_operations(directory)}
+            return {'mode':mode,'finished':True,'result':result,'pending':pending_operations(directory)}
         return self._job(mode,perform)
 
     def add_worker_draft(self, payload=None):
@@ -490,7 +516,7 @@ class DesktopController:
                    'language_set','logs','scan_server','trust_server','check_server','verify_release','run',
                    'add_worker_draft','set_initial_workers','worker_action','stop','directory_save','directory_probe',
                    'activation_save','initialize_identity','certificate_check','certificate_save','administrator','maintenance'}
-        allowed.update(('directory_ca','unlock_legacy'))
+        allowed.update(('directory_ca','unlock_legacy','worker_service_save','update_preview'))
         if action == 'state': return self.snapshot()
         if action not in allowed: raise ValueError('Unsupported desktop action')
         return getattr(self,action)(payload)

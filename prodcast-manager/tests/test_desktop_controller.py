@@ -19,6 +19,28 @@ def configured():
     return value
 
 
+def test_worker_service_account_is_encrypted_separate_and_redacted(controller):
+    secret='synthetic-worker-service-secret'
+    controller.worker_service_save(dict(role='worker1',mode='custom',account='EXAMPLE\\svc-worker',password=secret))
+    assert controller._read_vault()['worker_services']['worker1']['password']==secret
+    assert 'worker1' not in controller._read_vault().get('ssh',{})
+    public=controller.snapshot()
+    assert public['worker_services']['worker1']['password_stored']
+    assert secret not in json.dumps(public)
+    controller.save_draft()
+    assert secret not in (controller.directory/'ui-draft.json').read_text('utf-8')
+    assert secret not in controller.log.redact('failure '+secret)
+    controller.worker_service_save(dict(role='worker1',mode='custom',account='EXAMPLE\\svc-worker'))
+    assert controller._read_vault()['worker_services']['worker1']['password']==secret
+    controller.worker_service_save(dict(role='worker1',mode='preserve'))
+    assert not controller._read_vault()['worker_services']['worker1']['password']
+
+
+def test_service_account_rejects_nonworker_and_invalid_account(controller):
+    with pytest.raises(ValueError):controller.worker_service_save(dict(role='app',mode='custom',account='EXAMPLE\\svc'))
+    with pytest.raises(ValueError):controller.worker_service_save(dict(role='worker1',mode='custom',account='bare-user'))
+
+
 def wait(controller):
     deadline = time.monotonic() + 5
     while controller.busy and time.monotonic() < deadline: time.sleep(.01)

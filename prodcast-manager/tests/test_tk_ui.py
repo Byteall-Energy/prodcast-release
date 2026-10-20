@@ -22,6 +22,15 @@ def window(tmp_path):
 def type_value(entry,text):entry.delete(0,'end');entry.insert(0,text)
 
 
+def test_worker_service_form_keeps_ssh_password_separate(window):
+    window.role='worker1';window.worker_services['worker1']={'mode':'custom','account':'EXAMPLE\\svc'}
+    window.navigate('servers')
+    assert 'service_mode' in window.fields
+    assert 'service_password' in window.fields
+    assert window.fields.get('password') is not window.fields['service_password']
+    assert window.worker_services['worker1']['account']=='EXAMPLE\\svc'
+
+
 def test_preview_sections_and_settings_without_qt(window):
     for key,_,_ in window.sections:window.navigate(key)
     for key in ('general','https','directory','activation'):

@@ -34,6 +34,8 @@ class SessionLog:
                 for key,value in data['tls'].items():
                     if key.endswith('.key'):walk(value)
             if isinstance(data,dict) and 'ssh' in data:walk(data['ssh'])
+            if isinstance(data,dict) and 'worker_services' in data:
+                for account in data['worker_services'].values():walk(account.get('password',''))
             if isinstance(data,dict) and data.get('app_tls'):walk(data['app_tls'].get('private_key',''))
             if isinstance(data,dict) and data.get('activation'):walk(data['activation'].get('token',''))
             if isinstance(data,dict) and data.get('directory'):walk(data['directory'].get('bind_password',''))

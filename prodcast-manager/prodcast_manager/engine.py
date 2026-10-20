@@ -58,7 +58,7 @@ class Engine:
                 allowed += [prefix+f'{int(r[6:]):02}' for r in worker_roles(self.c) for prefix in ('PW_W','REDIS_W')]
             certs={'db':['postgres','redis'],'ai':['ai'],'app':['site','license']}[role]
         files=self.release.for_role(role) if self.release else {}
-        return dict(site=self.c,topology=topology_hash(self.c),installation_id=self.vault.data.get('installation_id',''),role=role,operation=operation,mode=mode,
+        result=dict(site=self.c,topology=topology_hash(self.c),installation_id=self.vault.data.get('installation_id',''),role=role,operation=operation,mode=mode,
                     previous_operation=getattr(self,'previous_operation',''),
                     version=self.release.version if self.release else '',
                     manifest=self.release.digest if self.release else '',
@@ -72,10 +72,13 @@ class Engine:
                     external_activation=getattr(self.release,'external_activation',False),
                     activation=self.vault.data.get('activation') if role=='app' else None,
                     directory=app_directory(self.vault.data.get('directory')) if role=='app' else None)
+        if role.startswith('worker') and self.vault.data.get('worker_services',{}).get(role):
+            result['worker_service']=dict(self.vault.data['worker_services'][role])
+        return result
 
     def run(self,mode):
-        if mode not in ('check','status','install','update','repair','backup','app-tls','ai'): raise ValueError('Unknown operation')
-        if mode in ('install','update','repair','ai') and not self.release: raise ValueError('Select a verified release')
+        if mode not in ('check','status','install','update','repair','backup','app-tls','ai','healthcheck'): raise ValueError('Unknown operation')
+        if mode in ('install','update','repair','ai','healthcheck') and not self.release: raise ValueError('Select a verified release')
         if mode in ('install','update','repair') and hasattr(self.release,'validate_worker_count'):
             self.release.validate_worker_count(len(worker_roles(self.c)))
         if mode in ('install','update') and self.vault.data.get('directory') is not None:
@@ -88,12 +91,15 @@ class Engine:
             if mode not in ('check','status') and maintenance_path.exists() and json.loads(maintenance_path.read_text('utf-8')).get('status') in ('running','failed'):
                 raise ValueError('Resume the interrupted backup/restore/reset operation before deploying')
             tls_journal=self.dir/'app-tls-journal.json'
-            if mode in ('install','update','repair') and tls_journal.exists() and json.loads(tls_journal.read_text('utf-8')).get('status') in ('running','failed'):
+            if mode in ('install','update','repair','healthcheck') and tls_journal.exists() and json.loads(tls_journal.read_text('utf-8')).get('status') in ('running','failed'):
                 raise ValueError(tr('Сначала повторите «Применить сертификат на App» для завершения предыдущей операции.'))
             if mode in ('install','update','repair','app-tls') and self.vault.data.get('app_tls'):
                 validate_for_site(self.vault.data['app_tls'],self.c)
             if mode=='app-tls':
                 return self._apply_app_tls()
+            if mode=='healthcheck':
+                from .component_updates import ExistingInstallation
+                return ExistingInstallation(self).run()
             if mode=='ai':
                 core_path=self.dir/'journal.json'
                 core=json.loads(core_path.read_text('utf-8')) if core_path.exists() else {}
@@ -124,6 +130,9 @@ class Engine:
             elif mode=='backup' or (mode=='status' and self.vault.data.get('topology')):
                 if self.vault.data.get('topology')!=topology_hash(self.c): raise ValueError('Use the original site file and vault for this installation')
             if self.diagnostics:self.diagnostics.protect(self.vault.data)
+            if mode=='update' and getattr(self.release,'assets',None):
+                from .component_updates import selective_update
+                return selective_update(self)
             return self._run(mode)
 
     def _apply_app_tls(self):
@@ -366,6 +375,8 @@ class Engine:
                 self.log(f'{role}: {action} — OK')
             if mutating:
                 journal['status']='complete'; atomic_json(path,journal)
+                from .component_updates import save_receipt
+                save_receipt(self)
             core_report={'mode':mode,'operation':operation,'hosts':statuses,'steps':list(self.report),'status':'complete','core_status':'complete'}
             atomic_json(self.dir/('report-'+operation+'.json'),core_report)
             if 'tls' in self.vault.data:
@@ -408,7 +419,7 @@ class Engine:
         spec=getattr(self.release,'offline_spec',{})
         external=bool(spec.get('external_ollama') or spec.get('external_model'))
         missing_selection=not getattr(self.release,'model_path',None) and not getattr(self.release,'ollama_path',None)
-        if allow_skip and mode=='update' and external and missing_selection:
+        if allow_skip and mode=='update' and (getattr(self,'keep_ai',False) or external and missing_selection):
             prior=json.loads(path.read_text('utf-8')) if path.exists() else {}
             pending=prior.get('status') in ('running','failed')
             started=bool(prior.get('steps') or prior.get('inflight'))

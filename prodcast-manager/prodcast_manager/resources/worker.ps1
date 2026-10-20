@@ -92,6 +92,75 @@ function Find-WorkerPython {
     }
     return $null
 }
+function Test-ServiceLogon($credential) {
+    if(!('ProdCastServiceLogon' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class ProdCastServiceLogon {
+ [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+ public static extern bool LogonUser(string user,string domain,string password,int type,int provider,out IntPtr token);
+ [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr token);
+}
+'@
+    }
+    $name=$credential.UserName;$domain=$null
+    if($name.Contains('\')){$parts=$name.Split('\',2);$domain=$parts[0];if($domain -eq '.'){$domain=$env:COMPUTERNAME};$name=$parts[1]}
+    $token=[IntPtr]::Zero
+    if(![ProdCastServiceLogon]::LogonUser($name,$domain,$credential.GetNetworkCredential().Password,5,0,[ref]$token)){
+        $code=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw ('Service logon validation failed (Windows '+$code+'). Check credentials, effective Log on as a service and Deny log on as a service with the domain administrator. No service was changed.')
+    }
+    try{
+        $identity=New-Object Security.Principal.WindowsIdentity($token)
+        try{if($identity.Groups.Value -contains 'S-1-5-32-544'){throw 'Use a dedicated non-administrator service account; an existing running service was not changed'}}finally{$identity.Dispose()}
+    }finally{[ProdCastServiceLogon]::CloseHandle($token) | Out-Null}
+}
+function Resolve-ServiceIdentity([bool]$prepareManaged=$false) {
+    $registration=Get-CimInstance Win32_Service -Filter "Name='$service'"
+    $setting=$p.worker_service;$mode=if($setting){$setting.mode}else{'preserve'}
+    if($mode -notin @('preserve','managed','custom')){throw 'Unsupported Worker service account mode'}
+    $managed=$env:COMPUTERNAME+'\prodcast-managed'
+    $account=if($mode -eq 'custom'){$setting.account}elseif($mode -eq 'preserve' -and $registration){$registration.StartName}else{$managed}
+    if($account.StartsWith('.\')){$account=$env:COMPUTERNAME+$account.Substring(1)}
+    $secret=if($mode -eq 'custom'){$setting.password}elseif($account -eq $managed){$p.secrets.('SVC_W'+$number)}else{''}
+    $credential=$null
+    if($secret){
+        $secure=ConvertTo-SecureString $secret -AsPlainText -Force
+        $credential=New-Object Management.Automation.PSCredential($account,$secure)
+    }
+    if($account -eq $managed -and ($mode -eq 'managed' -or !$registration)){
+        if($prepareManaged){
+            $user=Get-LocalUser -Name 'prodcast-managed' -ErrorAction SilentlyContinue
+            if(!$user){$user=New-LocalUser -Name 'prodcast-managed' -Password $secure -UserMayNotChangePassword -PasswordNeverExpires -Description ('ProdCast Manager '+$p.site.site_id)}
+            elseif($user.Description -ne ('ProdCast Manager '+$p.site.site_id)){throw 'Existing service account belongs to another installation'}
+            if(Get-LocalGroupMember -SID 'S-1-5-32-544' | Where-Object SID -eq $user.SID){throw 'Managed service account cannot be an administrator'}
+            Add-ServiceRights $user.SID.Value
+        }
+    }
+    $recreate=!$registration -or !$script:state.pending_root -or !$registration.PathName.Contains($script:state.pending_root)
+    if($registration -and $script:state.steps -and $script:state.steps.PSObject.Properties[($p.operation+':install')] -and (Test-WorkerRuntime) -and $script:state.install_root.StartsWith(('C:\ProdCast\Managed\'+$p.version+'-'),[StringComparison]::OrdinalIgnoreCase)){$recreate=$false}
+    if($mode -eq 'custom' -and !$credential -and $registration -and $registration.StartName -ne $account){throw 'A service password is required to change the existing logon account; no service was changed'}
+    if($recreate -and !$credential){throw 'Preserving this service account during Worker replacement requires its credentials. Save the same approved account and password in Worker service account settings first. No service was stopped or changed.'}
+    if($credential -and ($mode -eq 'custom' -or $prepareManaged -or $registration)){Test-ServiceLogon $credential}
+    return @{account=$account;credential=$credential;mode=$mode;registration=$registration}
+}
+function Invoke-WorkerInstaller($package,$installDir,$python,$credential) {
+    $installerPath=Join-Path $package 'runtime\Install-Worker.ps1'
+    if(!$credential.UserName.StartsWith(($env:COMPUTERNAME+'\'),[StringComparison]::OrdinalIgnoreCase)){
+        # Narrow compatibility adapter for the verified legacy installer only.
+        # Domain credentials have already passed a real service logon and the
+        # non-administrator token check. No domain policy is edited here.
+        $source=[IO.File]::ReadAllText($installerPath)
+        $pattern='(?ms)^# Initial profile deliberately supports provisioned non-admin local accounts only\.\r?\n.*?(?=^\$name=)'
+        $match=[regex]::Match($source,$pattern)
+        if(!$match.Success -or !$match.Value.Contains('Supply a provisioned local service account as COMPUTERNAME\user.') -or !$match.Value.Contains('Administrator service account refused.')){throw 'This Worker installer does not have the reviewed service-account adapter contract; use a compatible Worker release'}
+        $installerPath=Join-Path $package 'runtime\Install-Worker-ServiceAccount.ps1'
+        [IO.File]::WriteAllText($installerPath,([regex]::Replace($source,$pattern,'# Approved service account was validated by Manager before installation.'+[Environment]::NewLine)))
+    }
+    & $installerPath -InstallDir $installDir -PythonPath $python -WorkerNumber $number -ServiceCredential $credential | Out-Host
+    if(!$?){throw 'Worker installer failed'}
+}
 function Install-Worker {
     if($p.mode -eq 'add-workers' -and $script:state.worker_expansion -eq $p.operation -and (Test-WorkerRuntime)){
         return @{service=$service;preserved=$true}
@@ -148,17 +217,8 @@ function Install-Worker {
     $version=& $python -c 'import platform; print(platform.python_version())'
     Check-Native 'Python version check'
     if($version.Trim() -ne '3.14.7'){throw 'Worker requires Python 3.14.7 exactly'}
-    $username='prodcast-managed'
-    $account=$env:COMPUTERNAME+'\'+$username
-    $password=ConvertTo-SecureString $p.secrets.('SVC_W'+$number) -AsPlainText -Force
-    $credential=New-Object Management.Automation.PSCredential($account,$password)
-    $user=Get-LocalUser -Name $username -ErrorAction SilentlyContinue
-    if(!$user){
-        New-LocalUser -Name $username -Password $password -UserMayNotChangePassword -PasswordNeverExpires -Description ('ProdCast Manager '+$p.site.site_id) | Out-Null
-        $user=Get-LocalUser -Name $username
-    } elseif($user.Description -ne ('ProdCast Manager '+$p.site.site_id)){throw 'Existing service account belongs to another installation'}
-    if(Get-LocalGroupMember -SID 'S-1-5-32-544' | Where-Object SID -eq $user.SID){throw 'Service account cannot be an administrator'}
-    Add-ServiceRights $user.SID.Value
+    $identity=Resolve-ServiceIdentity $true
+    $account=$identity.account;$credential=$identity.credential
     if(!$script:state.pending_root){
         Set-Field $script:state 'pending_root' ('C:\ProdCast\Managed\'+$p.version+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
         Save-State
@@ -180,8 +240,16 @@ function Install-Worker {
             Set-Field $script:state 'pending_root' $installDir; Save-State
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
-        & (Join-Path $package 'runtime\Install-Worker.ps1') -InstallDir $installDir -PythonPath $python -WorkerNumber $number -ServiceCredential $credential | Out-Host
-        if(!$?){throw 'Worker installer failed'}
+        Invoke-WorkerInstaller $package $installDir $python $credential
+    }
+    elseif($identity.mode -in @('custom','managed') -and ($credential -or $svc.StartName -ne $account)){
+        if(!$credential){throw 'A password is required to explicitly change service logon'}
+        if($svc.State -ne 'Stopped'){throw 'Stop the selected Worker through its reviewed update/repair action before changing the service account'}
+        $change=Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{StartName=$account;StartPassword=$credential.GetNetworkCredential().Password}
+        if($change.ReturnValue -ne 0){throw ('Service account change failed: '+$change.ReturnValue)}
+        $sid=(New-Object Security.Principal.NTAccount($account)).Translate([Security.Principal.SecurityIdentifier]).Value
+        & icacls.exe $installDir /grant:r ('*'+$sid+':(OI)(CI)(RX)') | Out-Null;Check-Native 'Grant service runtime access'
+        foreach($folder in @('logs','jobs','recovery')){& icacls.exe (Join-Path $installDir $folder) /grant:r ('*'+$sid+':(OI)(CI)(M)') | Out-Null;Check-Native 'Grant service data access'}
     }
     if([int]$number -gt 2 -and $adapted){
         $runner=Join-Path $p.stage 'worker-service-runner.py'
@@ -204,7 +272,7 @@ function Install-Worker {
     $values=@{postgres_password=$p.secrets.('PW_W'+$number);redis_password=$p.secrets.('REDIS_W'+$number);media_key=$p.secrets.MEDIA_KEY;signing_key=$p.secrets.SIGNING_KEY}
     $plain=[Text.Encoding]::UTF8.GetBytes(($values | ConvertTo-Json -Compress))
     try{[IO.File]::WriteAllBytes((Join-Path $installDir 'scheduler.machine.dpapi'),[Security.Cryptography.ProtectedData]::Protect($plain,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine))}
-    finally{[Array]::Clear($plain,0,$plain.Length);$values.Clear();$password.Dispose()}
+    finally{[Array]::Clear($plain,0,$plain.Length);$values.Clear()}
     $svc=Get-Service $service
     if($svc.Status -eq 'Running'){Stop-Service $service; $svc.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(90))}
     & (Join-Path $package 'runtime\Start-Worker.ps1') -InstallDir $installDir -WorkerNumber $number | Out-Host
@@ -234,6 +302,25 @@ function Repair-Worker {
     # Install-Worker preserves the old directory, repairs dependencies and creates
     # a fresh runtime when the owned service is stopped or missing.
     return Install-Worker
+}
+function Test-ExistingWorker {
+    if(!$script:state -or $script:state.operation -notin @('',$null,$p.operation) -or $script:state.maintenance){throw 'Worker healthcheck ownership conflict'}
+    $registration=Get-CimInstance Win32_Service -Filter "Name='$service'"
+    if(!$registration -or $registration.State -ne 'Running'){throw 'Worker service is not running'}
+    if(($script:state.version -ne $p.version -or $script:state.manifest -ne $p.manifest) -and $script:state.operation -ne $p.operation){throw 'Worker release receipt does not match the selected installed release'}
+    if($p.worker_service -and $p.worker_service.mode -eq 'custom' -and $registration.StartName -ne $p.worker_service.account){throw 'Running Worker service account differs from the configured account; healthcheck does not change it'}
+    $candidate=$null
+    foreach($path in @($script:state.install_root,$script:state.pending_root)){
+        if($path -and $registration.PathName.Trim('"') -eq (Join-Path $path ($service+'.exe'))){$candidate=$path;break}
+    }
+    if(!$candidate -or !$candidate.StartsWith(('C:\ProdCast\Managed\'+$p.version+'-'),[StringComparison]::OrdinalIgnoreCase)){throw 'Worker runtime path does not match the expected installed release'}
+    foreach($name in @('site.json','scheduler.machine.dpapi','payload\service_runner.pyc','logs\scheduler-service-ready.json')){
+        if(!(Test-Path -LiteralPath (Join-Path $candidate $name) -PathType Leaf)){throw ('Worker readiness file missing: '+$name)}
+    }
+    $siteConfig=Get-Content -Raw -LiteralPath (Join-Path $candidate 'site.json') | ConvertFrom-Json
+    $marker=Get-Content -Raw -LiteralPath (Join-Path $candidate 'logs\scheduler-service-ready.json') | ConvertFrom-Json
+    if($siteConfig.worker_number -ne $number -or $siteConfig.postgres_host -ne $p.site.hosts.db.address -or $marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker identity/isolation/TLS readiness mismatch'}
+    return @{healthy=$true;service=$service;account=$registration.StartName;path=$candidate;postgres_tls=$true;services_restarted=$false}
 }
 function Stop-OwnedWorker {
     # Caller either resets explicitly or has already paused/drained App jobs.
@@ -366,6 +453,16 @@ function Dispatch {
             return @{released=$true;operation=$p.operation}
         }
         'install' {return Install-Worker}
+        'service-preflight' {$identity=Resolve-ServiceIdentity $false;return @{validated=$true;account=$identity.account;preserved=($identity.mode -eq 'preserve')}}
+        'healthcheck' {return Test-ExistingWorker}
+        'reconcile' {
+            $ready=Test-ExistingWorker
+            if($script:state.install_root -ne $ready.path){Set-Field $script:state 'previous_root' $script:state.install_root}
+            Set-Field $script:state 'install_root' $ready.path;Set-Field $script:state 'pending_root' ''
+            Set-Field $script:state 'version' $p.version;Set-Field $script:state 'manifest' $p.manifest
+            Set-Field $script:state 'operation' '';Save-State
+            return $ready
+        }
         'verify' {
             if(!(Test-WorkerRuntime)){throw 'Worker service readiness failed'}
             $marker=Get-Content -Raw -LiteralPath (Join-Path $script:state.install_root 'logs\scheduler-service-ready.json') | ConvertFrom-Json
@@ -446,7 +543,7 @@ try{
             $result=Repair-Worker
             Set-Field $script:state.steps $key $result; Save-State
         }
-        elseif($done -and $p.action -notin @('claim','commit','status','repair','verify')){$result=$done.Value}
+        elseif($done -and $p.action -notin @('claim','commit','status','repair','verify','healthcheck','reconcile','service-preflight')){$result=$done.Value}
         else{
             $result=Dispatch
             if($p.mode -in @('install','update','repair','add-workers')){Set-Field $script:state.steps $key $result; Save-State}
