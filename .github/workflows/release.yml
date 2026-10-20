@@ -54,7 +54,7 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - name: Resolve HEADs once, validate version/tags/release, and check CI
         id: snapshot
@@ -116,18 +116,18 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-app,prodcast-worker
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-app
+          repository: Byteall-Energy/prodcast-app
           ref: ${{ needs.resolve.outputs.app_sha }}
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           path: app
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-worker
+          repository: Byteall-Energy/prodcast-worker
           ref: ${{ needs.resolve.outputs.worker_sha }}
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           path: worker
@@ -172,11 +172,11 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-app
+          repository: Byteall-Energy/prodcast-app
           ref: ${{ needs.resolve.outputs.app_sha }}
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
@@ -194,7 +194,7 @@ jobs:
       - name: Build App images and deployment payload
         env:
           PRODCAST_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-          PRODCAST_SOURCE_REPOSITORY: saatchi190499/prodcast-app
+          PRODCAST_SOURCE_REPOSITORY: Byteall-Energy/prodcast-app
           PRODCAST_PUBLISH_IMAGES: 'false'
         run: python release/build_linux.py
       - uses: actions/upload-artifact@v4
@@ -217,11 +217,11 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-agent
+          repository: Byteall-Energy/prodcast-agent
           ref: ${{ needs.resolve.outputs.agent_sha }}
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
@@ -235,7 +235,7 @@ jobs:
         shell: pwsh
         env:
           PRODCAST_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-          PRODCAST_SOURCE_REPOSITORY: saatchi190499/prodcast-agent
+          PRODCAST_SOURCE_REPOSITORY: Byteall-Energy/prodcast-agent
         run: ./release/build_windows.ps1
       - uses: actions/upload-artifact@v4
         with:
@@ -268,11 +268,11 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-worker
+          repository: Byteall-Energy/prodcast-worker
           ref: ${{ needs.resolve.outputs.worker_sha }}
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
@@ -284,7 +284,7 @@ jobs:
         shell: pwsh
         env:
           PRODCAST_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-          PRODCAST_SOURCE_REPOSITORY: saatchi190499/prodcast-worker
+          PRODCAST_SOURCE_REPOSITORY: Byteall-Energy/prodcast-worker
         run: ./release/build_windows.ps1
       - uses: actions/upload-artifact@v4
         with:
@@ -306,11 +306,11 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-ai
+          repository: Byteall-Energy/prodcast-ai
           ref: ${{ needs.resolve.outputs.ai_sha }}
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
@@ -321,7 +321,7 @@ jobs:
       - name: Build AI image and deployment payload
         env:
           PRODCAST_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-          PRODCAST_SOURCE_REPOSITORY: saatchi190499/prodcast-ai
+          PRODCAST_SOURCE_REPOSITORY: Byteall-Energy/prodcast-ai
           PRODCAST_PUBLISH_IMAGES: 'false'
         run: python release/build_linux.py
       - uses: actions/upload-artifact@v4
@@ -344,7 +344,7 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
@@ -392,7 +392,7 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
@@ -436,7 +436,7 @@ jobs:
           GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
         run: >-
           gh release download "${{ needs.resolve.outputs.base_tag }}"
-          --repo saatchi190499/prodcast-release
+          --repo Byteall-Energy/prodcast-release
           --pattern "${{ needs.resolve.outputs.base_asset }}"
           --dir dist/base
       - name: Assemble, checksum, and validate all provenance
@@ -477,7 +477,7 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
       - uses: actions/checkout@v4
         with:
@@ -503,7 +503,7 @@ jobs:
         run: >-
           gh release create "$RELEASE_VERSION"
           dist/assembled/*
-          --repo saatchi190499/prodcast-release
+          --repo Byteall-Energy/prodcast-release
           --target "${{ needs.resolve.outputs.release_sha }}"
           --title "ProdCast $RELEASE_VERSION"
           --notes-file dist/assembled/RELEASE-NOTES.md
@@ -515,7 +515,7 @@ jobs:
       - name: Publish only after every tag is verified
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
-        run: gh release edit "$RELEASE_VERSION" --repo saatchi190499/prodcast-release --draft=false
+        run: gh release edit "$RELEASE_VERSION" --repo Byteall-Energy/prodcast-release --draft=false
       - name: Write release summary
         env:
           BASE_TAG: ${{ needs.resolve.outputs.base_tag }}

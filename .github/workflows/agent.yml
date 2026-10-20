@@ -47,11 +47,11 @@ jobs:
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
-          owner: saatchi190499
+          owner: Byteall-Energy
           repositories: prodcast-agent
       - uses: actions/checkout@v4
         with:
-          repository: saatchi190499/prodcast-agent
+          repository: Byteall-Energy/prodcast-agent
           ref: main
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
@@ -64,7 +64,7 @@ jobs:
       - name: Build and smoke-test Agent
         shell: pwsh
         env:
-          PRODCAST_SOURCE_REPOSITORY: saatchi190499/prodcast-agent
+          PRODCAST_SOURCE_REPOSITORY: Byteall-Energy/prodcast-agent
         run: ./release/build_windows.ps1
       - name: Upload installer EXE only
         uses: actions/upload-artifact@v4

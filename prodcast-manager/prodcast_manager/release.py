@@ -93,7 +93,7 @@ class Release:
             if n=='license' and self.external_activation:continue
             if n=='ai' and not validate_ai:continue
             i=self.images['prodcast-'+n]
-            if not re.fullmatch(r'ghcr.io/saatchi190499/prodcast-[a-z]+:[A-Za-z0-9._-]+',i['transport_tag']): raise ValueError('Unexpected image reference')
+            if not re.fullmatch(r'ghcr\.io/(?:saatchi190499|byteall-energy)/prodcast-[a-z]+:[A-Za-z0-9._-]+',i['transport_tag']): raise ValueError('Unexpected image reference')
         self.allowed_from=self.doc.get('management',{}).get('upgrade_from',['v0.2'])
         if self.offline:
             spec=self.offline_spec
@@ -202,7 +202,7 @@ class Release:
                 path=self.files[key];asset=self.assets.get(path.name)
                 if not asset or not path.is_file() or sha(path)!=asset['sha256']:raise ValueError('Missing/corrupt AI asset: '+path.name)
             image=self.images.get('prodcast-ai',{})
-            if not re.fullmatch(r'ghcr.io/saatchi190499/prodcast-[a-z]+:[A-Za-z0-9._-]+',image.get('transport_tag','')):raise ValueError('Unexpected AI image reference')
+            if not re.fullmatch(r'ghcr\.io/(?:saatchi190499|byteall-energy)/prodcast-[a-z]+:[A-Za-z0-9._-]+',image.get('transport_tag','')):raise ValueError('Unexpected AI image reference')
             if self.offline:
                 self.prepare_ollama()
                 for key in ('ollama_runtime','model_archive'):

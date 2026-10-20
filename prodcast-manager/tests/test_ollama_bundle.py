@@ -6,8 +6,8 @@ from prodcast_manager.release import Release, sha
 from prodcast_manager.offline import PROFILE
 
 
-@pytest.fixture
-def bundle(tmp_path):
+@pytest.fixture(params=['saatchi190499', 'byteall-energy'])
+def bundle(tmp_path, request):
     root=tmp_path/'complete';root.mkdir()
     artifacts=[]
     for key in ['app-deployment','backend-linux-amd64','frontend-linux-amd64','gateway-linux-amd64','ai-deployment','ai-linux-amd64','worker-windows-amd64']:
@@ -29,7 +29,7 @@ def bundle(tmp_path):
           'external_ollama':{'name':archive.name,'bytes':archive.stat().st_size,'sha256':sha(archive)}}
     contract={'schema':3,'profile':PROFILE,'minimum_manager':'0.3.2','python':'3.14.7','database_major':18,
               'migration_policy':'forward-only','upgrade_from':['v0.3'],'offline':spec}
-    components=[{'name':'prodcast-'+n,'images':[{'name':'prodcast-'+n,'transport_tag':'ghcr.io/saatchi190499/prodcast-'+n+':test'}]} for n in ['backend','frontend','gateway','ai']]
+    components=[{'name':'prodcast-'+n,'images':[{'name':'prodcast-'+n,'transport_tag':'ghcr.io/'+request.param+'/prodcast-'+n+':test'}]} for n in ['backend','frontend','gateway','ai']]
     doc={'version':'v0.4-rc.1','management':contract,'components':components,'artifacts':artifacts}
     def load(ai=False,ollama=archive,model_file=model):
         manifest=root/'release-manifest.json';manifest.write_text(json.dumps(doc))
@@ -126,3 +126,11 @@ def test_same_size_changed_inner_bytes_are_rejected(bundle):
         z.writestr('old-runtime.tar.xz',b'Xuntime.tar.xz')
         z.writestr('metadata.tar.gz',b'metadata.tar.gz')
     with pytest.raises(ValueError,match='Missing/corrupt AI offline payload'):load(ai=True)
+
+
+@pytest.mark.parametrize('owner', ['untrusted', 'byteall-energy.evil'])
+def test_rejects_untrusted_image_owner(bundle, owner):
+    root, archive, model, doc, load = bundle
+    doc['components'][0]['images'][0]['transport_tag'] = f'ghcr.io/{owner}/prodcast-backend:test'
+    with pytest.raises(ValueError, match='Unexpected image reference'):
+        load()

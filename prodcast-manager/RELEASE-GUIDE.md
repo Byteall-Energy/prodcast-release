@@ -8,11 +8,11 @@ component packages are not used.
 
 Ensure approved changes and required CI are complete on `main` in:
 
-- `saatchi190499/prodcast-app`
-- `saatchi190499/prodcast-agent`
-- `saatchi190499/prodcast-worker`
-- `saatchi190499/prodcast-ai`
-- `saatchi190499/prodcast-release`
+- `Byteall-Energy/prodcast-app`
+- `Byteall-Energy/prodcast-agent`
+- `Byteall-Energy/prodcast-worker`
+- `Byteall-Energy/prodcast-ai`
+- `Byteall-Energy/prodcast-release`
 
 Configure the release GitHub App secrets or the `PRODCAST_RELEASE_TOKEN` PAT as described in
 [`VERSIONING.md`](../VERSIONING.md). Do not create the target release or tag in

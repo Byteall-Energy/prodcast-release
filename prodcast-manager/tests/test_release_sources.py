@@ -54,7 +54,7 @@ def test_release_repository_does_not_gate_on_running_release_workflow():
     result = source_ci(
         UnexpectedGitHubCall(),
         "release",
-        "saatchi190499/prodcast-release",
+        "Byteall-Energy/prodcast-release",
         "a" * 40,
         True,
     )

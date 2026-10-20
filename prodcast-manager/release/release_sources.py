@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
-OWNER = "saatchi190499"
+OWNER = "Byteall-Energy"
 REPOSITORIES = {
     "app": f"{OWNER}/prodcast-app",
     "agent": f"{OWNER}/prodcast-agent",

@@ -11,7 +11,7 @@ from assemble import build, pack, record, sha256, write_json
 
 VERSION = "v0.6.1"
 COMMITS = {name: character * 40 for name, character in zip(("app", "agent", "worker", "ai", "release"), "abcde")}
-REPOSITORIES = {name: f"saatchi190499/prodcast-{name}" for name in ("app", "agent", "worker", "ai")}
+REPOSITORIES = {name: f"Byteall-Energy/prodcast-{name}" for name in ("app", "agent", "worker", "ai")}
 
 
 def checksum(folder):
@@ -74,7 +74,7 @@ def snapshot(root):
             "release_version": VERSION,
             "base_release": {"tag": "v0.6.0", "asset": "ProdCast-v0.6.0-complete.zip"},
             "components": {
-                name: {"repository": "saatchi190499/prodcast-release" if name == "release" else REPOSITORIES[name], "source_commit": commit}
+                name: {"repository": "Byteall-Energy/prodcast-release" if name == "release" else REPOSITORIES[name], "source_commit": commit}
                 for name, commit in COMMITS.items()
             },
         },

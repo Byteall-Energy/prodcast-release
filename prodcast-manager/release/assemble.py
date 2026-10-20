@@ -14,10 +14,10 @@ import stat
 import sys
 import zipfile
 
-REPOSITORY = "saatchi190499/prodcast-release"
+REPOSITORY = "Byteall-Energy/prodcast-release"
 COMPONENT_REPOSITORIES = {
-    "app": "saatchi190499/prodcast-app", "agent": "saatchi190499/prodcast-agent",
-    "worker": "saatchi190499/prodcast-worker", "ai": "saatchi190499/prodcast-ai",
+    "app": "Byteall-Energy/prodcast-app", "agent": "Byteall-Energy/prodcast-agent",
+    "worker": "Byteall-Energy/prodcast-worker", "ai": "Byteall-Energy/prodcast-ai",
 }
 COMPONENT_PREFIXES = {
     "app": ("prodcast-app-", "prodcast-backend-", "prodcast-frontend-", "prodcast-gateway-"),

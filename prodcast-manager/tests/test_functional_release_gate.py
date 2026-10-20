@@ -9,7 +9,7 @@ def test_functional_gate_uses_frozen_sources_and_blocks_assembly():
     assemble = workflow.split('\n  assemble:\n', 1)[1].split('\n  publish:\n', 1)[0]
     assert 'needs: [resolve, functional, app, agent, worker, ai, manager]' in assemble
     for component in ('app', 'worker'):
-        checkout = functional.split('repository: saatchi190499/prodcast-' + component, 1)[1].split('persist-credentials:', 1)[0]
+        checkout = functional.split('repository: Byteall-Energy/prodcast-' + component, 1)[1].split('persist-credentials:', 1)[0]
         assert 'ref: ${{ needs.resolve.outputs.' + component + '_sha }}' in checkout
         assert 'path: ' + component in checkout
     assert 'PRODCAST_WORKER_SOURCE="$GITHUB_WORKSPACE/worker"' in functional
