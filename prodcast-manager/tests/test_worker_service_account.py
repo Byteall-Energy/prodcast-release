@@ -44,3 +44,50 @@ try{Test-ExistingWorker;throw 'Expected health refusal'}catch{if($_.Exception.Me
     result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1')],capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'OK' in result.stdout
+
+
+def test_custom_administrator_credentials_are_accepted_without_warning(tmp_path):
+    script=r'''
+param([string]$Source,[string]$Stage)
+$ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw ($errors | Out-String)}
+foreach($name in @('Test-ServiceLogon','Invoke-WorkerInstaller')){
+ $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+ . ([scriptblock]::Create($fn.Extent.Text))
+}
+# Isolated logon API stub: never authenticates or modifies real Windows accounts.
+Add-Type @'
+using System;
+public class ProdCastServiceLogon {
+ public static bool LogonUser(string user,string domain,string password,int type,int provider,out IntPtr token) { token=new IntPtr(1); return user!="bad"; }
+ public static bool CloseHandle(IntPtr token) { return true; }
+}
+'@
+$number='01';$secure=New-Object Security.SecureString
+$runtime=Join-Path $Stage 'runtime';New-Item -ItemType Directory $runtime | Out-Null
+$installer=@'
+param($InstallDir,$PythonPath,$WorkerNumber,$ServiceCredential)
+$account=$ServiceCredential.UserName
+# Initial profile deliberately supports provisioned non-admin local accounts only.
+$prefix=$env:COMPUTERNAME+'\'
+if (!$account.StartsWith($prefix)) { throw 'Supply a provisioned local service account as COMPUTERNAME\user.' }
+throw 'Administrator service account refused.'
+$name='ProdCastWorker'+$WorkerNumber
+Write-Host ('installed='+$account)
+'@
+[IO.File]::WriteAllText((Join-Path $runtime 'Install-Worker.ps1'),$installer)
+foreach($account in @('DOMAIN\AdminUser',($env:COMPUTERNAME+'\AdminUser'))){
+ $credential=New-Object Management.Automation.PSCredential($account,$secure)
+ Test-ServiceLogon $credential
+ Invoke-WorkerInstaller $Stage 'unused' 'unused' $credential
+}
+$bad=New-Object Management.Automation.PSCredential('DOMAIN\bad',$secure)
+try{Test-ServiceLogon $bad;throw 'Expected bad credential refusal'}catch{if($_.Exception.Message -notmatch 'Service logon validation failed'){throw}}
+'OK'
+'''
+    path=tmp_path/'admin-account.ps1';path.write_text(script,'utf-8')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1'),'-Stage',str(tmp_path)],capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'installed=DOMAIN\\AdminUser' in result.stdout and 'OK' in result.stdout
+    assert 'warning' not in result.stdout.lower()

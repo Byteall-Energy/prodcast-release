@@ -111,10 +111,7 @@ public class ProdCastServiceLogon {
         $code=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         throw ('Service logon validation failed (Windows '+$code+'). Check credentials, effective Log on as a service and Deny log on as a service with the domain administrator. No service was changed.')
     }
-    try{
-        $identity=New-Object Security.Principal.WindowsIdentity($token)
-        try{if($identity.Groups.Value -contains 'S-1-5-32-544'){throw 'Use a dedicated non-administrator service account; an existing running service was not changed'}}finally{$identity.Dispose()}
-    }finally{[ProdCastServiceLogon]::CloseHandle($token) | Out-Null}
+    [ProdCastServiceLogon]::CloseHandle($token) | Out-Null
 }
 function Resolve-ServiceIdentity([bool]$prepareManaged=$false) {
     $registration=Get-CimInstance Win32_Service -Filter "Name='$service'"
@@ -147,17 +144,15 @@ function Resolve-ServiceIdentity([bool]$prepareManaged=$false) {
 }
 function Invoke-WorkerInstaller($package,$installDir,$python,$credential) {
     $installerPath=Join-Path $package 'runtime\Install-Worker.ps1'
-    if(!$credential.UserName.StartsWith(($env:COMPUTERNAME+'\'),[StringComparison]::OrdinalIgnoreCase)){
-        # Narrow compatibility adapter for the verified legacy installer only.
-        # Domain credentials have already passed a real service logon and the
-        # non-administrator token check. No domain policy is edited here.
-        $source=[IO.File]::ReadAllText($installerPath)
-        $pattern='(?ms)^# Initial profile deliberately supports provisioned non-admin local accounts only\.\r?\n.*?(?=^\$name=)'
-        $match=[regex]::Match($source,$pattern)
-        if(!$match.Success -or !$match.Value.Contains('Supply a provisioned local service account as COMPUTERNAME\user.') -or !$match.Value.Contains('Administrator service account refused.')){throw 'This Worker installer does not have the reviewed service-account adapter contract; use a compatible Worker release'}
-        $installerPath=Join-Path $package 'runtime\Install-Worker-ServiceAccount.ps1'
-        [IO.File]::WriteAllText($installerPath,([regex]::Replace($source,$pattern,'# Approved service account was validated by Manager before installation.'+[Environment]::NewLine)))
-    }
+    # Narrow compatibility adapter for the verified legacy installer only.
+    # Credentials passed a real service logon. Custom administrator accounts
+    # are supported; this does not edit domain policy or grant administrator rights.
+    $source=[IO.File]::ReadAllText($installerPath)
+    $pattern='(?ms)^# Initial profile deliberately supports provisioned non-admin local accounts only\.\r?\n.*?(?=^\$name=)'
+    $match=[regex]::Match($source,$pattern)
+    if(!$match.Success -or !$match.Value.Contains('Supply a provisioned local service account as COMPUTERNAME\user.') -or !$match.Value.Contains('Administrator service account refused.')){throw 'This Worker installer does not have the reviewed service-account adapter contract; use a compatible Worker release'}
+    $installerPath=Join-Path $package 'runtime\Install-Worker-ServiceAccount.ps1'
+    [IO.File]::WriteAllText($installerPath,([regex]::Replace($source,$pattern,'# Service account was validated by Manager before installation.'+[Environment]::NewLine)))
     & $installerPath -InstallDir $installDir -PythonPath $python -WorkerNumber $number -ServiceCredential $credential | Out-Host
     if(!$?){throw 'Worker installer failed'}
 }
