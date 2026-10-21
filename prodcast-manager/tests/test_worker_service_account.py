@@ -1,5 +1,6 @@
 """Real PowerShell identity/health functions, mocked service/account boundaries."""
 import subprocess
+import pytest
 from prodcast_manager.engine import RESOURCES
 
 
@@ -20,7 +21,7 @@ $script:svc=[pscustomobject]@{State='Running';StartName='EXAMPLE\approved';PathN
 function Get-CimInstance {param($ClassName,$Filter) return $script:svc}
 function New-LocalUser {throw 'Must not create an account'}
 function Add-ServiceRights {throw 'Must not edit service logon rights'}
-function Test-ServiceLogon {param($Credential) $script:validated=$Credential.UserName}
+function Test-ServiceLogon {throw 'Separate logon probe must not block SCM startup'}
 function ConvertTo-SecureString {param($String,[switch]$AsPlainText,[switch]$Force) return (New-Object Security.SecureString)}
 function Test-Path {param($LiteralPath,$PathType) return $true}
 function Get-Content {param([switch]$Raw,$LiteralPath)
@@ -35,7 +36,7 @@ $script:state.pending_root=''
 try{Resolve-ServiceIdentity $false;throw 'Expected credential refusal'}catch{if($_.Exception.Message -notmatch 'requires its credentials'){throw}}
 $p | Add-Member worker_service @{mode='custom';account='EXAMPLE\approved';password='synthetic-only'}
 $identity=Resolve-ServiceIdentity $true
-if($script:validated -ne 'EXAMPLE\approved'){throw 'Service logon was not checked'}
+if($identity.credential.UserName -ne 'EXAMPLE\approved'){throw 'Service credentials were not preserved for SCM'}
 $script:svc.State='Stopped'
 try{Test-ExistingWorker;throw 'Expected health refusal'}catch{if($_.Exception.Message -notmatch 'not running'){throw}}
 'OK'
@@ -52,18 +53,11 @@ param([string]$Source,[string]$Stage)
 $ErrorActionPreference='Stop';$tokens=$null;$errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
-foreach($name in @('Test-ServiceLogon','Invoke-WorkerInstaller')){
+foreach($name in @('Invoke-WorkerInstaller')){
  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
  . ([scriptblock]::Create($fn.Extent.Text))
 }
-# Isolated logon API stub: never authenticates or modifies real Windows accounts.
-Add-Type @'
-using System;
-public class ProdCastServiceLogon {
- public static bool LogonUser(string user,string domain,string password,int type,int provider,out IntPtr token) { token=new IntPtr(1); return user!="bad"; }
- public static bool CloseHandle(IntPtr token) { return true; }
-}
-'@
+# No real Windows accounts or services are modified.
 $number='01';$secure=New-Object Security.SecureString
 $runtime=Join-Path $Stage 'runtime';New-Item -ItemType Directory $runtime | Out-Null
 $installer=@'
@@ -79,11 +73,8 @@ Write-Host ('installed='+$account)
 [IO.File]::WriteAllText((Join-Path $runtime 'Install-Worker.ps1'),$installer)
 foreach($account in @('DOMAIN\AdminUser',($env:COMPUTERNAME+'\AdminUser'))){
  $credential=New-Object Management.Automation.PSCredential($account,$secure)
- Test-ServiceLogon $credential
  Invoke-WorkerInstaller $Stage 'unused' 'unused' $credential
 }
-$bad=New-Object Management.Automation.PSCredential('DOMAIN\bad',$secure)
-try{Test-ServiceLogon $bad;throw 'Expected bad credential refusal'}catch{if($_.Exception.Message -notmatch 'Service logon validation failed'){throw}}
 'OK'
 '''
     path=tmp_path/'admin-account.ps1';path.write_text(script,'utf-8')
@@ -91,3 +82,46 @@ try{Test-ServiceLogon $bad;throw 'Expected bad credential refusal'}catch{if($_.E
     assert result.returncode==0,result.stdout+result.stderr
     assert 'installed=DOMAIN\\AdminUser' in result.stdout and 'OK' in result.stdout
     assert 'warning' not in result.stdout.lower()
+
+
+@pytest.mark.parametrize('case', ['success', 'scm-failure', 'not-running', 'not-ready'])
+def test_worker_startup_uses_service_result_and_requires_readiness(tmp_path, case):
+    runtime=tmp_path/'runtime';runtime.mkdir()
+    (runtime/'Start-Worker.ps1').write_text(r'''
+param($InstallDir,$WorkerNumber)
+$global:startupAttempted=$true
+if($global:case -eq 'scm-failure'){throw 'SCM logon failure 1069'}
+$global:serviceRunning=($global:case -ne 'not-running')
+''','utf-8')
+    script=r'''
+param($Source,$Package,$Case)
+$ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw ($errors | Out-String)}
+$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-InstalledWorker'},$true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$service='ProdCastWorker01';$number='01';$executionMode='windows-account'
+$global:case=$Case;$global:startupAttempted=$false;$global:serviceRunning=$false
+function Set-Service {param($Name,$StartupType)}
+function Get-CimInstance {param($ClassName,$Filter,$ErrorAction)
+ return [pscustomobject]@{StartName='DOMAIN\approved';State=$(if($global:serviceRunning){'Running'}else{'Stopped'});ExitCode=1069}
+}
+function Get-Content {param([switch]$Raw,$LiteralPath)
+ if($global:case -eq 'not-ready'){return '{"mode":"wrong","postgres_tls":false}'}
+ return '{"mode":"windows-account","postgres_tls":true}'
+}
+$failure=''
+try{$marker=Start-InstalledWorker $Package 'unused'}catch{$failure=$_.Exception.Message}
+if(!$global:startupAttempted){throw 'Must attempt actual service startup'}
+if($Case -eq 'success'){
+ if($failure -or !$marker.postgres_tls){throw 'Healthy startup must succeed'}
+}else{
+ if(!$failure){throw 'Unhealthy startup must fail'}
+ if($Case -eq 'scm-failure' -and $failure -notmatch '1069'){throw 'Must preserve actual SCM failure'}
+}
+'OK'
+'''
+    path=tmp_path/'start-test.ps1';path.write_text(script,'utf-8')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1'),'-Package',str(tmp_path),'-Case',case],capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'OK' in result.stdout

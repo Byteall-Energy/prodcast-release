@@ -92,27 +92,6 @@ function Find-WorkerPython {
     }
     return $null
 }
-function Test-ServiceLogon($credential) {
-    if(!('ProdCastServiceLogon' -as [type])){
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public class ProdCastServiceLogon {
- [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
- public static extern bool LogonUser(string user,string domain,string password,int type,int provider,out IntPtr token);
- [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr token);
-}
-'@
-    }
-    $name=$credential.UserName;$domain=$null
-    if($name.Contains('\')){$parts=$name.Split('\',2);$domain=$parts[0];if($domain -eq '.'){$domain=$env:COMPUTERNAME};$name=$parts[1]}
-    $token=[IntPtr]::Zero
-    if(![ProdCastServiceLogon]::LogonUser($name,$domain,$credential.GetNetworkCredential().Password,5,0,[ref]$token)){
-        $code=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        throw ('Service logon validation failed (Windows '+$code+'). Check credentials, effective Log on as a service and Deny log on as a service with the domain administrator. No service was changed.')
-    }
-    [ProdCastServiceLogon]::CloseHandle($token) | Out-Null
-}
 function Resolve-ServiceIdentity([bool]$prepareManaged=$false) {
     $registration=Get-CimInstance Win32_Service -Filter "Name='$service'"
     $setting=$p.worker_service;$mode=if($setting){$setting.mode}else{'preserve'}
@@ -139,22 +118,40 @@ function Resolve-ServiceIdentity([bool]$prepareManaged=$false) {
     if($registration -and $script:state.steps -and $script:state.steps.PSObject.Properties[($p.operation+':install')] -and (Test-WorkerRuntime) -and $script:state.install_root.StartsWith(('C:\ProdCast\Managed\'+$p.version+'-'),[StringComparison]::OrdinalIgnoreCase)){$recreate=$false}
     if($mode -eq 'custom' -and !$credential -and $registration -and $registration.StartName -ne $account){throw 'A service password is required to change the existing logon account; no service was changed'}
     if($recreate -and !$credential){throw 'Preserving this service account during Worker replacement requires its credentials. Save the same approved account and password in Worker service account settings first. No service was stopped or changed.'}
-    if($credential -and ($mode -eq 'custom' -or $prepareManaged -or $registration)){Test-ServiceLogon $credential}
+    # Credential availability is checked here; SCM authenticates the account
+    # when the configured service starts. A separate LogonUser probe can
+    # disagree with service startup in a privileged-access session.
     return @{account=$account;credential=$credential;mode=$mode;registration=$registration}
 }
 function Invoke-WorkerInstaller($package,$installDir,$python,$credential) {
     $installerPath=Join-Path $package 'runtime\Install-Worker.ps1'
     # Narrow compatibility adapter for the verified legacy installer only.
-    # Credentials passed a real service logon. Custom administrator accounts
-    # are supported; this does not edit domain policy or grant administrator rights.
+    # Custom administrator accounts are supported. SCM validates credentials
+    # at service startup; this does not edit domain policy or grant admin rights.
     $source=[IO.File]::ReadAllText($installerPath)
     $pattern='(?ms)^# Initial profile deliberately supports provisioned non-admin local accounts only\.\r?\n.*?(?=^\$name=)'
     $match=[regex]::Match($source,$pattern)
     if(!$match.Success -or !$match.Value.Contains('Supply a provisioned local service account as COMPUTERNAME\user.') -or !$match.Value.Contains('Administrator service account refused.')){throw 'This Worker installer does not have the reviewed service-account adapter contract; use a compatible Worker release'}
     $installerPath=Join-Path $package 'runtime\Install-Worker-ServiceAccount.ps1'
-    [IO.File]::WriteAllText($installerPath,([regex]::Replace($source,$pattern,'# Service account was validated by Manager before installation.'+[Environment]::NewLine)))
+    [IO.File]::WriteAllText($installerPath,([regex]::Replace($source,$pattern,'# Service credentials are authenticated by SCM at startup.'+[Environment]::NewLine)))
     & $installerPath -InstallDir $installDir -PythonPath $python -WorkerNumber $number -ServiceCredential $credential | Out-Host
     if(!$?){throw 'Worker installer failed'}
+}
+function Start-InstalledWorker($package,$installDir) {
+    Set-Service -Name $service -StartupType Manual
+    try{
+        & (Join-Path $package 'runtime\Start-Worker.ps1') -InstallDir $installDir -WorkerNumber $number | Out-Host
+        if(!$?){throw 'Worker startup script failed; inspect operation.log and Service Control Manager events'}
+        $running=Get-CimInstance Win32_Service -Filter "Name='$service'"
+        if(!$running -or $running.State -ne 'Running'){throw 'Worker service did not reach Running state'}
+        $marker=Get-Content -Raw -LiteralPath (Join-Path $installDir 'logs\scheduler-service-ready.json') | ConvertFrom-Json
+        if($marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker isolation/TLS readiness failed'}
+        return $marker
+    }catch{
+        $details=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue
+        Write-Host ('Worker startup/readiness failed: service='+$service+'; account='+$details.StartName+'; state='+$details.State+'; exit_code='+$details.ExitCode+'. Inspect Windows System / Service Control Manager events and the Worker logs.')
+        throw
+    }
 }
 function Install-Worker {
     if($p.mode -eq 'add-workers' -and $script:state.worker_expansion -eq $p.operation -and (Test-WorkerRuntime)){
@@ -272,10 +269,7 @@ function Install-Worker {
     if($svc.Status -eq 'Running'){Stop-Service $service; $svc.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(90))}
     # Only the fully prepared target runtime is allowed to start. The old
     # service remains disabled throughout the backup/replacement interval.
-    Set-Service -Name $service -StartupType Manual
-    & (Join-Path $package 'runtime\Start-Worker.ps1') -InstallDir $installDir -WorkerNumber $number | Out-Host
-    $marker=Get-Content -Raw -LiteralPath (Join-Path $installDir 'logs\scheduler-service-ready.json') | ConvertFrom-Json
-    if($marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker isolation/TLS readiness failed'}
+    $marker=Start-InstalledWorker $package $installDir
     Restore-WorkerStartup
     Set-Field $script:state 'previous_root' $script:state.install_root
     Set-Field $script:state 'install_root' $installDir
@@ -492,7 +486,7 @@ function Dispatch {
             return @{released=$true;operation=$p.operation}
         }
         'install' {return Install-Worker}
-        'service-preflight' {$identity=Resolve-ServiceIdentity $false;return @{validated=$true;account=$identity.account;preserved=($identity.mode -eq 'preserve')}}
+        'service-preflight' {$identity=Resolve-ServiceIdentity $false;return @{credentials_available=$true;authentication='service-start';account=$identity.account;preserved=($identity.mode -eq 'preserve')}}
         'healthcheck' {return Test-ExistingWorker}
         'reconcile' {
             $ready=Test-ExistingWorker
