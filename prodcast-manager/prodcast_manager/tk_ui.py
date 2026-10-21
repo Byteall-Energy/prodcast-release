@@ -421,7 +421,7 @@ class DesktopWindow:
                 self.fields['service_password']=self.fields.pop('password')
                 if ssh_password_field is not None:self.fields['password']=ssh_password_field
             self.button(form,'Save service account settings…','Сохранить настройки учётной записи…',self.save_worker_service,True)
-            self.note('Credentials are encrypted separately from SSH. Use a dedicated non-administrator account with Log on as a service granted by IT. Saving does not change a running service; changes apply only when this Worker is explicitly installed/updated/repaired. Preserve never silently replaces an existing account.','Данные шифруются отдельно от SSH. Используйте выделенную непривилегированную запись с правом «Вход в качестве службы», выданным IT. Сохранение не меняет работающую службу; настройки применяются только при установке/обновлении/ремонте этого Worker. Сохранение существующей записи не подменяет её автоматически.')
+            self.note('Credentials are encrypted separately from SSH. The service account must have effective Log on as a service rights. Saving does not change a running service; changes apply only when this Worker is explicitly installed/updated/repaired. Preserve never silently replaces an existing account.','Данные шифруются отдельно от SSH. Учётная запись должна иметь действующее право «Вход в качестве службы». Сохранение не меняет работающую службу; настройки применяются только при установке/обновлении/ремонте этого Worker. Сохранение существующей записи не подменяет её автоматически.')
 
     def save_worker_service(self):
         value={k:v for k,v in self.worker_services[self.role].items() if k!='password_stored'}
@@ -772,8 +772,17 @@ def smoke_test(home=None):
 
 
 def main():
+    from .instance import manager_instance
+    from .session_logs import application_directory
     root=tk.Tk();root.withdraw();apply_branding(root,default=True)
-    try:window=DesktopWindow(root,DesktopController())
-    except Exception as error:
-        messagebox.showerror('ProdCast Manager — startup failed',str(error),parent=root);root.destroy();return 1
-    root.deiconify();root.mainloop();return 0
+    instance=manager_instance(application_directory())
+    try:instance.__enter__()
+    except OSError as error:
+        messagebox.showinfo('ProdCast Manager','Manager is already open for this prodcast-data folder, or the folder cannot be locked. Close the existing window and check folder access.\n\n'+str(error),parent=root)
+        root.destroy();return 1
+    try:
+        try:window=DesktopWindow(root,DesktopController())
+        except Exception as error:
+            messagebox.showerror('ProdCast Manager — startup failed',str(error),parent=root);root.destroy();return 1
+        root.deiconify();root.mainloop();return 0
+    finally:instance.__exit__(None,None,None)

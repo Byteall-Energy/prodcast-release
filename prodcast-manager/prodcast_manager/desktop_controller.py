@@ -21,6 +21,7 @@ from .portable import (data_directory, last_directory, runtime_config, save_conf
 from .release import Release
 from .session_logs import SessionLog, application_directory
 from .vault import Vault
+from .local_io import read_text_shared
 
 
 class DesktopController:
@@ -107,7 +108,7 @@ class DesktopController:
     @staticmethod
     def _json(path):
         try:
-            value = json.loads(path.read_text('utf-8'))
+            value = json.loads(read_text_shared(path))
             return value if isinstance(value, dict) else {}
         except (OSError, ValueError): return {}
 

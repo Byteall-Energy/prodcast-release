@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import atomic_json
+from .local_io import read_text_shared
 
 JOURNALS = ('journal.json', 'ai-journal.json', 'workers-journal.json',
             'worker-action-journal.json', 'app-tls-journal.json', 'maintenance-journal.json')
@@ -29,7 +30,7 @@ def pending_operations(directory):
         if not path.exists():
             continue
         try:
-            value = json.loads(path.read_text('utf-8'))
+            value = json.loads(read_text_shared(path))
             if not isinstance(value, dict):
                 raise ValueError('Expected object')
             if value.get('status') in ('running', 'failed'):
@@ -78,7 +79,7 @@ class OperationHistory:
         with self.lock:
             for path in self.directory.glob('*.json'):
                 try:
-                    value = json.loads(path.read_text('utf-8'))
+                    value = json.loads(read_text_shared(path))
                     if not isinstance(value, dict) or not re.fullmatch(r'[0-9]{8}-[0-9]{6}-[a-f0-9]{12}', value.get('id', '')):
                         continue
                     if path.stem != value['id']:

@@ -113,12 +113,8 @@ def validate_membership(c, data):
             raise ValueError('Worker membership differs from the approved installation profile')
 
 def atomic_json(path, obj):
-    path=Path(path); path.parent.mkdir(parents=True,exist_ok=True)
-    tmp=path.with_suffix(path.suffix+'.tmp')
-    with tmp.open('w',encoding='utf-8',newline='\n') as f:
-        import os
-        os.chmod(tmp,0o600); json.dump(obj,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
-    tmp.replace(path)
+    from .local_io import atomic_json as write
+    return write(path,obj)
 
 @contextlib.contextmanager
 def file_lock(path):
