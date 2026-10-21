@@ -197,6 +197,55 @@ def test_failed_account_preflight_never_controls_consumers(deployed):
     assert not any(a in ('resume-workers','drain-workers','stop','claim') for r,a,p in e.test_calls)
 
 
+@pytest.mark.parametrize('mode', ['preserve', 'custom'])
+def test_account_settings_can_change_after_preflight_only_failure(deployed,mode):
+    e=deployed;change(e,'worker1')
+    e.vault.data['worker_services']={'worker1':dict(mode='managed',account='',password='')}
+    e.test_remote.fail=('worker1','service-preflight')
+    with pytest.raises(RuntimeError):e.run('update')
+    before=json.loads((e.dir/'journal.json').read_text())
+    assert before['phase']=='preflight' and not before['steps']
+    e.vault.data['worker_services']['worker1']=dict(mode=mode,account='DOMAIN\\approved' if mode=='custom' else '',password='synthetic' if mode=='custom' else '')
+    e.test_remote.fail=None;e.test_calls.clear()
+    assert e.run('update')['changed_roles']==['worker1']
+    assert all(p['operation']==before['operation'] for r,a,p in e.test_calls)
+    assert any(r=='worker1' and a=='install' for r,a,p in e.test_calls)
+    assert list((e.dir/'history').glob('before-preflight-retry-*.json'))
+
+
+def test_preflight_retry_can_recalculate_scope_after_account_correction(deployed):
+    e=deployed
+    e.vault.data['worker_services']={'worker1':dict(mode='managed',account='',password='')}
+    e.test_remote.fail=('worker1','service-preflight')
+    with pytest.raises(RuntimeError):e.run('update')
+    e.vault.data['worker_services']['worker1']['mode']='preserve'
+    e.test_remote.fail=None;e.test_calls.clear()
+    assert e.run('update')['changed_roles']==[]
+    assert all(a=='preflight' for r,a,p in e.test_calls)
+
+
+@pytest.mark.parametrize('failure', ['claim', 'stop', 'install'])
+def test_account_changes_still_block_after_first_update_action_attempted(deployed,failure):
+    e=deployed;change(e,'worker1')
+    e.vault.data['worker_services']={'worker1':dict(mode='managed',account='',password='')}
+    e.test_remote.fail=('worker1',failure)
+    with pytest.raises(RuntimeError):e.run('update')
+    journal=json.loads((e.dir/'journal.json').read_text())
+    assert journal['phase']=='applying' and journal['inflight']['action']==failure
+    e.vault.data['worker_services']['worker1']['mode']='preserve'
+    e.test_remote.fail=None;e.test_calls.clear()
+    with pytest.raises(ValueError,match='settings changed'):e.run('update')
+    assert not e.test_calls
+
+
+def test_preflight_retry_still_requires_original_release(deployed):
+    e=deployed;change(e,'worker1');e.test_remote.fail=('worker1','service-preflight')
+    with pytest.raises(RuntimeError):e.run('update')
+    e.release.digest='another-release';e.test_remote.fail=None;e.test_calls.clear()
+    with pytest.raises(ValueError,match='original package'):e.run('update')
+    assert not e.test_calls
+
+
 def test_healthcheck_can_finalize_completed_target_of_failed_scoped_update(deployed):
     e=deployed;change(e,'worker1');e.test_remote.fail=('worker1','commit')
     with pytest.raises(RuntimeError):e.run('update')

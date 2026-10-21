@@ -158,14 +158,21 @@ def selective_update(e):
     changed=changed_roles(e,baseline);path=e.dir/'journal.json'
     prior=json.loads(path.read_text('utf-8')) if path.exists() else {}
     pending=prior.get('status') in ('running','failed') and prior.get('selective')
+    # phase is persisted as applying, with inflight, before the first action.
+    # A failed read-only preflight may be safely replanned with corrected
+    # settings; never loosen settings/scope checks after an action was attempted.
+    preflight_retry=bool(pending and prior.get('phase')=='preflight'
+                         and not prior.get('steps') and not prior.get('inflight'))
     if prior.get('status') in ('running','failed') and not pending:
         raise ValueError('Resume or stop the pending core operation before starting a different component update.')
-    if pending and (prior.get('manifest')!=e.release.digest or prior.get('changed_roles')!=list(changed)):
+    if pending and (prior.get('manifest')!=e.release.digest or
+                    prior.get('changed_roles')!=list(changed) and not preflight_retry):
         raise ValueError('Resume this component update with its original package, settings and scope.')
     operation=prior['operation'] if pending else uuid.uuid4().hex
     targets={r:fingerprint(e,r) for r in core_roles(e.c)}
     saved=e.vault.data.setdefault('component_update_targets',{})
-    if pending and saved.get(operation)!=targets:raise ValueError('Component update settings changed; restore the original settings to resume.')
+    settings_changed=bool(pending and saved.get(operation)!=targets)
+    if settings_changed and not preflight_retry:raise ValueError('Component update settings changed; restore the original settings to resume.')
     actions=update_actions(changed);owner=ExistingInstallation(e)
     journal=dict(prior) if pending else dict(operation=operation,mode='update',manifest=e.release.digest,
         version=e.release.version,status='running',phase='preflight',selective=True,changed_roles=list(changed),steps=[],
@@ -175,6 +182,14 @@ def selective_update(e):
         history=e.dir/'history';history.mkdir(exist_ok=True)
         if prior.get('operation'):atomic_json(history/('before-component-update-'+operation+'.json'),prior)
         atomic_json(path,journal)
+    elif preflight_retry and (settings_changed or prior.get('changed_roles')!=list(changed)):
+        history=e.dir/'history';history.mkdir(exist_ok=True)
+        atomic_json(history/('before-preflight-retry-'+operation+'-'+uuid.uuid4().hex+'.json'),prior)
+        saved[operation]=targets;e.vault.save()
+        journal.update(changed_roles=list(changed),install_ai=e.c.get('install_ai',True),
+                       ai_address=e.c['hosts']['ai']['address'],status='running')
+        atomic_json(path,journal)
+        e.log('Preflight-only retry: accepted corrected settings; repeating all checks before applying update steps.')
     e.log('Update scope: '+(', '.join(changed) or 'no core component changes'))
     e.log('Unchanged service groups are not stopped, reinstalled, reconfigured or committed.')
     statuses={};consumers_drained=False
