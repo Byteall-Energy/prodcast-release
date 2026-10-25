@@ -109,6 +109,7 @@ jobs:
       CHANNEL_REDIS_URL: redis://127.0.0.1:6379/2
       DJANGO_DEBUG: 'true'
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      PRODCAST_WORKER_SOURCE: ${{ github.workspace }}/worker
     steps:
       - uses: actions/create-github-app-token@v2
         if: env.PRODCAST_RELEASE_APP_ID != ''
@@ -143,11 +144,12 @@ jobs:
           # Worker owns its plugin and runtime dependencies; use its frozen source.
           (cd worker && python -m pip install -r requirements-worker.txt)
           python -m pip check
-      - name: Test module lifecycles and all four Worker round trips
+      - name: Test isolated Worker output bridge
+        run: python -m unittest discover -s app/release -p 'test_worker_roundtrip.py' -v
+      - name: Test module lifecycles and Worker round trips in both save modes
         working-directory: app/backend/mainapp
         run: |
-          export PRODCAST_WORKER_SOURCE="$GITHUB_WORKSPACE/worker"
-          if ! python manage.py test apiapp.test_platform_functional --noinput -v 2 > functional-tests.log 2>&1; then
+          if ! python manage.py test apiapp.test_platform_functional apiapp.test_output_save_mode --noinput -v 2 > functional-tests.log 2>&1; then
             cat functional-tests.log
             exit 1
           fi
