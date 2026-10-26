@@ -47,6 +47,59 @@ try{Test-ExistingWorker;throw 'Expected health refusal'}catch{if($_.Exception.Me
     assert 'OK' in result.stdout
 
 
+@pytest.mark.parametrize('case', ['prepared', 'incomplete', 'foreign-service', 'old-operation', 'stale-target'])
+def test_failed_start_recovery_and_next_attempt_need_no_manual_enable(tmp_path, case):
+    runtime=tmp_path/'runtime';runtime.mkdir()
+    (runtime/'Start-Worker.ps1').write_text(r'''
+param($InstallDir,$WorkerNumber)
+if($global:startMode -eq 'Disabled'){throw 'Service disabled: 1058'}
+if($global:firstAttempt){throw 'Initial service startup failure'}
+$global:running=$true
+''','utf-8')
+    script=r'''
+param($Source,$Package,$Case)
+$ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw ($errors | Out-String)}
+foreach($name in @('Start-InstalledWorker','Recover-WorkerStartupFailure','Restore-WorkerStartup')){
+ $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+ . ([scriptblock]::Create($fn.Extent.Text))
+}
+$service='ProdCastWorker01';$number='01';$executionMode='windows-account';$p=@{operation='update'}
+$target='C:\ProdCast\Managed\target'
+$script:state=[pscustomobject]@{pending_root=$target;worker_start=@{operation='update';path=$target};worker_stop=@{operation='update';start_mode='Auto';delayed_auto=$false}}
+$global:startMode='Disabled';$global:running=$false;$global:firstAttempt=$true
+$global:servicePath=Join-Path $target ($service+'.exe')
+function Set-Service {param($Name,$StartupType) $global:startMode=$StartupType}
+function Stop-OwnedWorker {$global:running=$false;$global:startMode='Disabled'}
+function Get-CimInstance {param($ClassName,$Filter,$ErrorAction)
+ return [pscustomobject]@{StartName='NCOC\approved';PathName=$global:servicePath;State=$(if($global:running){'Running'}else{'Stopped'});ExitCode=0}
+}
+function Get-Content {param([switch]$Raw,$LiteralPath) return '{"mode":"windows-account","postgres_tls":true}'}
+function Test-Path {param($LiteralPath,$PathType) return ($Case -ne 'incomplete')}
+try{Start-InstalledWorker $Package $target;throw 'Expected initial failure'}catch{if($_.Exception.Message -notmatch 'Initial service startup failure'){throw}}
+if($Case -eq 'foreign-service'){$global:servicePath='C:\other\ProdCastWorker01.exe'}
+if($Case -eq 'old-operation'){$script:state.worker_start.operation='old'}
+if($Case -eq 'stale-target'){$script:state.worker_start.path='C:\old'}
+Recover-WorkerStartupFailure
+if($Case -eq 'prepared'){
+ if($global:startMode -ne 'Manual' -or $global:running){throw 'Prepared target must remain stopped and manually startable'}
+ $global:startMode='Disabled' # Also support services disabled by older Manager builds.
+ $global:firstAttempt=$false
+ $ready=Start-InstalledWorker $Package $target
+ if(!$global:running -or !$ready.postgres_tls){throw 'Retry must enable and start target automatically'}
+ Restore-WorkerStartup
+ if($global:startMode -ne 'Automatic'){throw 'Original startup mode must survive failure/retry'}
+ if((Get-CimInstance Win32_Service).StartName -ne 'NCOC\approved'){throw 'Account changed'}
+}elseif($global:startMode -ne 'Disabled'){throw 'Unprepared or unowned target must stay disabled'}
+'OK'
+'''
+    path=tmp_path/'retry-test.ps1';path.write_text(script,'utf-8')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1'),'-Package',str(tmp_path),'-Case',case],capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'OK' in result.stdout
+
+
 def test_custom_administrator_credentials_are_accepted_without_warning(tmp_path):
     script=r'''
 param([string]$Source,[string]$Stage)

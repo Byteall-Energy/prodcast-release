@@ -153,6 +153,22 @@ function Start-InstalledWorker($package,$installDir) {
         throw
     }
 }
+function Recover-WorkerStartupFailure {
+    # Stop any partial process tree first. Only a fully configured target may
+    # be left manually startable; old/incomplete runtimes stay disabled.
+    Stop-OwnedWorker
+    $prepared=$script:state.worker_start
+    if(!$prepared -or $prepared.operation -ne $p.operation){return}
+    if($prepared.path -ne $script:state.pending_root){return}
+    $registration=Get-CimInstance Win32_Service -Filter "Name='$service'"
+    if(!$registration -or $registration.State -ne 'Stopped' -or
+       $registration.PathName.Trim('"') -ne (Join-Path $prepared.path ($service+'.exe'))){return}
+    foreach($name in @('site.json','scheduler.machine.dpapi','prodcast-db-ca.crt','prodcast-app-ca.crt','payload\service_runner.pyc')){
+        if(!(Test-Path -LiteralPath (Join-Path $prepared.path $name) -PathType Leaf)){return}
+    }
+    Set-Service -Name $service -StartupType Manual
+    Write-Host 'Prepared Worker is stopped and enabled for retry; Manager will reapply configured credentials and start it on resume. Original startup mode is retained until readiness succeeds.'
+}
 function Install-Worker {
     if($p.mode -eq 'add-workers' -and $script:state.worker_expansion -eq $p.operation -and (Test-WorkerRuntime)){
         return @{service=$service;preserved=$true}
@@ -211,6 +227,7 @@ function Install-Worker {
     if($version.Trim() -ne '3.14.7'){throw 'Worker requires Python 3.14.7 exactly'}
     $identity=Resolve-ServiceIdentity $true
     $account=$identity.account;$credential=$identity.credential
+    Set-Field $script:state 'worker_start' $null; Save-State
     if(!$script:state.pending_root){
         Set-Field $script:state 'pending_root' ('C:\ProdCast\Managed\'+$p.version+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
         Save-State
@@ -269,6 +286,10 @@ function Install-Worker {
     if($svc.Status -eq 'Running'){Stop-Service $service; $svc.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(90))}
     # Only the fully prepared target runtime is allowed to start. The old
     # service remains disabled throughout the backup/replacement interval.
+    # Persist this only after credentials, ACLs, configuration and secrets are
+    # ready. Never enable an incomplete replacement from the error handler.
+    Set-Field $script:state 'worker_start' @{operation=$p.operation;path=$installDir}
+    Save-State
     $marker=Start-InstalledWorker $package $installDir
     Restore-WorkerStartup
     Set-Field $script:state 'previous_root' $script:state.install_root
@@ -586,7 +607,7 @@ try{
 }catch{
     $failure=$_
     if($p.action -in @('install','repair') -and $script:state.worker_stop.operation -eq $p.operation){
-        try{Stop-OwnedWorker}catch{Write-Host 'Worker could not be confirmed stopped after install failure; inspect the operation log before retrying.'}
+        try{Recover-WorkerStartupFailure}catch{Write-Host 'Worker failure recovery could not complete; Manager will recheck the owned service on retry. Inspect the operation log.'}
     }
     if($transcript){Write-Output $failure.Exception.Message; Write-Output $failure.ScriptStackTrace; Stop-Transcript | Out-Null}
     # Third-party error details stay on the server; never echo credentials or command bodies.
