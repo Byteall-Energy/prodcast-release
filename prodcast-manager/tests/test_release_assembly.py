@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import subprocess
 import zipfile
 
 import pytest
@@ -82,7 +83,7 @@ def snapshot(root):
     return path
 
 
-def inputs(root, agent_prefix="ProdcastAgentSetup-"):
+def inputs(root, agent_prefix="ProdCastAgent-"):
     return {
         "app": payload(root, "app", [f"prodcast-backend-{VERSION}-linux-amd64.tar.gz", f"prodcast-app-{VERSION}-deployment.tar.gz"]),
         "agent": payload(root, "agent", [f"{agent_prefix}{VERSION}.exe", "workflow-agent-sbom.cdx.json"]),
@@ -91,8 +92,8 @@ def inputs(root, agent_prefix="ProdcastAgentSetup-"):
     }
 
 
-@pytest.mark.parametrize("agent_prefix", ["ProdcastAgentSetup-", "ProdCastAgent-Setup-"])
-def test_complete_uses_fresh_payloads_and_excludes_standalone_executables(tmp_path, agent_prefix):
+def test_complete_uses_fresh_payloads_and_excludes_standalone_executables(tmp_path):
+    agent_prefix = "ProdCastAgent-"
     payloads = inputs(tmp_path, agent_prefix)
     manager = tmp_path / "ProdCast-Manager.exe"
     manager.write_bytes(b"manager")
@@ -110,10 +111,19 @@ def test_complete_uses_fresh_payloads_and_excludes_standalone_executables(tmp_pa
         assert item["source_commit"] == COMMITS[component]
         assert item["release_tag"] == VERSION
         assert item["binary_version"] == VERSION
-    assert assets["agent"].name == f"ProdcastAgentSetup-{VERSION}.exe"
+    assert assets["agent"].name == f"ProdCastAgent-{VERSION}.exe"
     assert assets["agent"].read_bytes() == ("agent" + agent_prefix + VERSION + ".exe").encode()
     assert assets["manager"].read_bytes() == b"manager"
     assert sha256(assets["manifest"]) in assets["manifest_checksum"].read_text()
+    summary = tmp_path / "summary.md"
+    subprocess.run([
+        sys.executable, str(Path(__file__).resolve().parents[1] / "release/write_summary.py"),
+        str(tmp_path / "source-snapshot.json"), str(tmp_path / "out"), str(summary), "build-only",
+    ], check=True)
+    assert f"ProdCastAgent-{VERSION}.exe" in summary.read_text(encoding="utf-8")
+    assert sha256(assets["agent"]) in summary.read_text(encoding="utf-8")
+    assert manifest["assembly_source"]["standalone_executables"] == [assets["agent"].name, assets["manager"].name]
+
 
 
 def test_provenance_mismatch_fails_closed(tmp_path):
@@ -154,3 +164,12 @@ def test_worker_policy_follows_payload(tmp_path, policy):
     assert doc["management"].get("worker_execution_policy") == policy
     if policy:
         assert doc["management"]["minimum_manager"] == "0.6.4"
+
+
+@pytest.mark.parametrize("agent_prefix", ["ProdcastAgentSetup-", "ProdCastAgent-Setup-"])
+def test_legacy_agent_installer_is_rejected(tmp_path, agent_prefix):
+    payloads = inputs(tmp_path, agent_prefix)
+    manager = tmp_path / "manager.exe"
+    manager.write_bytes(b"manager")
+    with pytest.raises(ValueError, match="exactly one versioned portable EXE"):
+        build(VERSION, base(tmp_path), payloads, manager, snapshot(tmp_path), tmp_path / "out")

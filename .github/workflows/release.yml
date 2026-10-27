@@ -208,7 +208,7 @@ jobs:
           retention-days: 1
 
   agent:
-    name: Build Agent
+    name: Build portable Agent
     needs: resolve
     runs-on: windows-2022
     timeout-minutes: 120
@@ -231,18 +231,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install Inno Setup
-        run: choco install innosetup --version=6.7.1 --yes --no-progress
-      - name: Build and smoke-test Agent
+      - name: Build and smoke-test portable Agent
         shell: pwsh
         env:
           PRODCAST_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
           PRODCAST_SOURCE_REPOSITORY: Byteall-Energy/prodcast-agent
-        run: ./release/build_windows.ps1
+        run: ./release/build_windows.ps1 -Portable
       - uses: actions/upload-artifact@v4
         with:
           name: agent-payload
-          path: dist/package/ProdcastAgentSetup-*.exe
+          path: dist/package/ProdCastAgent-v*.exe
           if-no-files-found: error
           compression-level: 0
           retention-days: 1

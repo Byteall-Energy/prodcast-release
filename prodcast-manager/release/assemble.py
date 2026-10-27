@@ -198,11 +198,11 @@ def build(version: str, base_archive: Path, payloads: dict[str, Path], manager_e
         artifact_names = [item["name"] for item in build_manifest["artifacts"]]
         mapping: dict[str, str] = {}
         if component == "agent":
-            installers = [name for name in artifact_names if name.startswith(("ProdcastAgentSetup-", "ProdCastAgent-Setup-")) and name.endswith(".exe")]
-            if len(installers) != 1:
-                raise ValueError("Agent payload must contain exactly one setup EXE")
+            portable_exe = f"ProdCastAgent-{target}.exe"
+            if [name for name in artifact_names if name.lower().endswith(".exe")] != [portable_exe]:
+                raise ValueError("Agent payload must contain exactly one versioned portable EXE")
             for name in artifact_names + ["release-manifest.json"]:
-                destination_name = f"ProdcastAgentSetup-{target}.exe" if name == installers[0] else mapped_name(component, name, build_manifest["version"], target)
+                destination_name = mapped_name(component, name, build_manifest["version"], target)
                 if (output / destination_name).exists():
                     raise ValueError(f"Artifact collision: {destination_name}")
                 shutil.copyfile(payload / name, output / destination_name)
@@ -243,7 +243,7 @@ def build(version: str, base_archive: Path, payloads: dict[str, Path], manager_e
     manifest["schema_version"] = max(2, int(manifest.get("schema_version", 1)))
     manifest.update({"version": target, "release_tag": target, "status": "complete", "publication_status": "prepared", "production_accepted": False, "created_utc": datetime.now(timezone.utc).isoformat()})
     manifest["components"] = [components[name] for name in sorted(components)]
-    manifest["assembly_source"] = {"base_version": base_version, "base_asset": snapshot["base_release"]["asset"], "changed_components": ["app", "agent", "worker", "ai", "manager"], "standalone_executables": [f"ProdcastAgentSetup-{target}.exe", manager_output.name]}
+    manifest["assembly_source"] = {"base_version": base_version, "base_asset": snapshot["base_release"]["asset"], "changed_components": ["app", "agent", "worker", "ai", "manager"], "standalone_executables": [f"ProdCastAgent-{target}.exe", manager_output.name]}
     management = manifest.setdefault("management", {})
     management.update({"recommended_manager": target.removeprefix("v"), "upgrade_from": sorted(set(management.get("upgrade_from", [])) | {base_version}), "distribution": "standalone-exe"})
     external += [record(manager_output, location="release-asset")]
@@ -260,7 +260,7 @@ def build(version: str, base_archive: Path, payloads: dict[str, Path], manager_e
     manifest_checksum = output / "release-manifest.json.sha256"
     manifest_checksum.write_text(f"{manifest_digest}  release-manifest.json\n", encoding="utf-8")
     notes = output / "RELEASE-NOTES.md"
-    notes.write_text(f"# ProdCast {target}\n\nBuilt from the frozen source snapshot recorded in `release-manifest.json`. Static/offline dependencies were carried forward from {base_version}.\n\n- `ProdCast-{target}-complete.zip` — App, Worker, AI, deployment and offline payloads\n- `ProdcastAgentSetup-{target}.exe` — Windows Agent installer\n- `ProdCast-Manager-{target}.exe` — one-file Windows Manager; it creates `prodcast-data/logs` and `prodcast-data/sites` beside the executable\n", encoding="utf-8")
+    notes.write_text(f"# ProdCast {target}\n\nBuilt from the frozen source snapshot recorded in `release-manifest.json`. Static/offline dependencies were carried forward from {base_version}.\n\n- `ProdCast-{target}-complete.zip` — App, Worker, AI, deployment and offline payloads\n- `ProdCastAgent-{target}.exe` — portable Windows Agent\n- `ProdCast-Manager-{target}.exe` — one-file Windows Manager; it creates `prodcast-data/logs` and `prodcast-data/sites` beside the executable\n", encoding="utf-8")
     checksums = output / "SHA256SUMS"
     checksum_targets = sorted(path for path in output.iterdir() if path.is_file() and path.name != "SHA256SUMS")
     checksums.write_text("".join(f"{sha256(path)}  {path.name}\n" for path in checksum_targets), encoding="utf-8")
@@ -272,7 +272,7 @@ def build(version: str, base_archive: Path, payloads: dict[str, Path], manager_e
         if not CONTROLS <= set(names):
             raise ValueError("Complete ZIP is missing release controls")
     shutil.rmtree(contents)
-    return {"complete": complete, "agent": output / f"ProdcastAgentSetup-{target}.exe", "manager": manager_output, "manifest": output / "release-manifest.json", "manifest_checksum": manifest_checksum, "checksums": checksums, "notes": notes}
+    return {"complete": complete, "agent": output / f"ProdCastAgent-{target}.exe", "manager": manager_output, "manifest": output / "release-manifest.json", "manifest_checksum": manifest_checksum, "checksums": checksums, "notes": notes}
 
 
 def main() -> None:

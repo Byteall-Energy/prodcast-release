@@ -27,7 +27,7 @@ for name in ("app", "agent", "worker", "ai", "release"):
 lines.extend(["## Base offline release", "", snapshot["base_release"]["tag"], "", "## Artifacts", ""])
 for name in (
     f"ProdCast-{version}-complete.zip",
-    f"ProdcastAgentSetup-{version}.exe",
+    f"ProdCastAgent-{version}.exe",
     f"ProdCast-Manager-{version}.exe",
     "release-manifest.json",
 ):

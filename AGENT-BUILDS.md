@@ -1,9 +1,27 @@
-# Agent installer builds
+# Portable Agent builds
 
-Run **Build Prodcast Agent installer** from Actions and enter one internal version, such as `v0.6.5`, matching the complete-release version format.
+Run **Build ProdCast portable Agent** from Actions and enter one internal version,
+such as `v0.6.5`, matching the complete-release version format.
 
-The workflow checks out `prodcast-agent` main, uses the same Windows build and smoke tests as **Build and assemble ProdCast release**, and uploads `Prodcast-Agent-v0.6.5` for 30 days. The artifact contains only `ProdcastAgentSetup-v0.6.5.exe`. Windows displays the product as **Prodcast Agent** with version `0.6.5.0`.
+The workflow checks out `prodcast-agent` main, runs
+`release/build_windows.ps1 -Portable`, and uploads `Prodcast-Agent-v0.6.5`
+for 7 days. The artifact contains only `ProdCastAgent-v0.6.5.exe`.
+No Inno Setup installation or setup EXE is used.
 
-The complete-release workflow's `agent-payload` artifact also contains only the installer EXE. Its assembly metadata travels separately in the one-day `agent-assembly-metadata` artifact and is recombined with the EXE for provenance and checksum validation.
+The complete-release workflow checks out its frozen Agent SHA and runs the same
+portable build and packaged execution smoke test. Its `agent-payload` artifact
+contains only the portable EXE. Checksums, source provenance, the SBOM, and
+portable usage instructions travel in the one-day `agent-assembly-metadata`
+artifact and are recombined for integrity validation. The final standalone Agent
+asset is `ProdCastAgent-vX.Y.Z.exe`; older setup EXEs are rejected as new inputs
+and removed when carrying forward a previous Complete release.
 
-This workflow creates no Git tags, drafts, or GitHub releases. Rebuilding an internal version does not require or reserve a platform release version. It uses the existing `PRODCAST_RELEASE_APP_ID` / `PRODCAST_RELEASE_APP_PRIVATE_KEY` credentials, or the existing `PRODCAST_RELEASE_TOKEN` fallback, to read the Agent repository.
+The packaged smoke test uses an isolated saved profile and an upstream fixture;
+it exercises notebook and graph execution, authentication, CORS, and the bundled
+PETEX integration without opening first-launch setup or registering autostart.
+
+The Agent-only workflow creates no Git tags, drafts, or GitHub releases.
+Rebuilding an internal version does not require or reserve a platform release
+version. It uses the existing `PRODCAST_RELEASE_APP_ID` /
+`PRODCAST_RELEASE_APP_PRIVATE_KEY` credentials, or the existing
+`PRODCAST_RELEASE_TOKEN` fallback, to read the Agent repository.
