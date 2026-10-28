@@ -61,6 +61,7 @@ param($Source,$Package,$Case)
 $ErrorActionPreference='Stop';$tokens=$null;$errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
+function Write-WorkerServiceDiagnostic {}
 foreach($name in @('Start-InstalledWorker','Recover-WorkerStartupFailure','Restore-WorkerStartup')){
  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
  . ([scriptblock]::Create($fn.Extent.Text))
@@ -155,6 +156,9 @@ $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionD
 . ([scriptblock]::Create($fn.Extent.Text))
 $service='ProdCastWorker01';$number='01';$executionMode='windows-account'
 $global:case=$Case;$global:startupAttempted=$false;$global:serviceRunning=$false
+function Write-WorkerServiceDiagnostic {param($phase,$since,$failure)
+ if($phase -eq 'startup-failed'){throw 'Diagnostic read denied; must not replace startup failure'}
+}
 function Set-Service {param($Name,$StartupType)}
 function Get-CimInstance {param($ClassName,$Filter,$ErrorAction)
  return [pscustomobject]@{StartName='DOMAIN\approved';State=$(if($global:serviceRunning){'Running'}else{'Stopped'});ExitCode=1069}
@@ -178,3 +182,52 @@ if($Case -eq 'success'){
     result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1'),'-Package',str(tmp_path),'-Case',case],capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'OK' in result.stdout
+
+
+@pytest.mark.parametrize('case', ['events', 'unavailable', 'none'])
+def test_service_diagnostics_scope_events_redact_password_and_never_mutate(tmp_path, case):
+    script=r'''
+param($Source,$Case)
+$ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw ($errors | Out-String)}
+$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-WorkerServiceDiagnostic'},$true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$service='ProdCastWorker01';$p=@{operation='test-operation';worker_service=@{password='synthetic-secret'}}
+$since=Get-Date
+function Set-Service {throw 'Diagnostics must not mutate service'}
+function Invoke-CimMethod {throw 'Diagnostics must not mutate credentials'}
+function Add-ServiceRights {throw 'Diagnostics must not mutate rights'}
+function Get-CimInstance {
+ if($Case -eq 'unavailable'){throw 'Read denied'}
+ return [pscustomobject]@{StartName='NT AUTHORITY\SYSTEM';DisplayName='ProdCast Worker 01';State='Stopped';StartMode='Manual';ProcessId=0;ExitCode=0;ServiceSpecificExitCode=0}
+}
+function Get-WinEvent {param($FilterHashtable,$MaxEvents,$ErrorAction)
+ if($FilterHashtable.StartTime -ne $since -or $FilterHashtable.ProviderName -ne 'Service Control Manager' -or $MaxEvents -ne 256){throw 'Incorrect diagnostic bounds'}
+ if($Case -eq 'unavailable'){throw 'Event read denied'}
+ if($Case -eq 'none'){return @()}
+ foreach($name in @('UnrelatedService','ProdCastWorker01','ProdCast Worker 01')){
+  $event=[pscustomobject]@{TimeCreated=$since;Id=7041;RecordId=42;Message=($name+' logon right missing synthetic-secret');Service=$name}
+  $event | Add-Member ScriptMethod ToXml {return ('<Event><EventData><Data Name="param1">'+$this.Service+'</Data></EventData></Event>')}
+  $event
+ }
+}
+try{throw (New-Object ComponentModel.Win32Exception(1069))}catch{$failure=$_}
+Write-WorkerServiceDiagnostic 'startup-failed' $since $failure
+'OK'
+'''
+    path=tmp_path/'diagnostics.ps1';path.write_text(script,'utf-8')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1'),'-Case',case],capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'OK' in result.stdout
+    assert 'synthetic-secret' not in result.stdout+result.stderr
+    assert 'native_error=1069' in result.stdout
+    if case=='events':
+        assert 'matched=2' in result.stdout
+        assert 'UnrelatedService' not in result.stdout
+        assert '[REDACTED]' in result.stdout
+    elif case=='none':
+        assert 'No matching SCM events' in result.stdout
+    else:
+        assert 'service configuration unavailable' in result.stdout
+        assert 'Worker SCM events unavailable' in result.stdout

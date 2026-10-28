@@ -137,19 +137,61 @@ function Invoke-WorkerInstaller($package,$installDir,$python,$credential) {
     & $installerPath -InstallDir $installDir -PythonPath $python -WorkerNumber $number -ServiceCredential $credential | Out-Host
     if(!$?){throw 'Worker installer failed'}
 }
-function Start-InstalledWorker($package,$installDir) {
-    Set-Service -Name $service -StartupType Manual
+function Write-WorkerServiceDiagnostic([string]$phase,[datetime]$since,$failure=$null) {
+    # Read-only and best effort. Never let diagnostics mask the original failure.
     try{
+        $details=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction Stop
+        $sid='unresolved'
+        if($details.StartName){
+            try{
+                $account=$details.StartName
+                if($account.StartsWith('.\')){$account=$env:COMPUTERNAME+$account.Substring(1)}
+                $sid=(New-Object Security.Principal.NTAccount($account)).Translate([Security.Principal.SecurityIdentifier]).Value
+            }catch{}
+        }
+        Write-Host ('Worker service diagnostic: phase='+$phase+'; host='+$env:COMPUTERNAME+'; operation='+$p.operation+'; service='+$service+'; account='+$details.StartName+'; sid='+$sid+'; state='+$details.State+'; start_mode='+$details.StartMode+'; pid='+$details.ProcessId+'; exit_code='+$details.ExitCode+'; service_exit_code='+$details.ServiceSpecificExitCode)
+    }catch{Write-Host 'Worker service diagnostic: service configuration unavailable.'}
+    if(!$failure){return}
+    try{
+        $exception=$failure.Exception
+        for($depth=0;$exception -and $depth -lt 8;$depth++){
+            Write-Host ('Worker startup exception: type='+$exception.GetType().FullName+'; hresult='+$exception.HResult+'; native_error='+$exception.NativeErrorCode)
+            $exception=$exception.InnerException
+        }
+    }catch{Write-Host 'Worker service diagnostic: exception codes unavailable.'}
+    try{
+        $until=Get-Date
+        $events=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager';StartTime=$since;EndTime=$until;Id=@(7000,7009,7011,7023,7024,7036,7038,7040,7041)} -MaxEvents 256 -ErrorAction Stop)
+        $matched=@($events | Where-Object {
+            $eventXml=[xml]$_.ToXml()
+            @($eventXml.Event.EventData.Data | Where-Object { $_.'#text' -eq $service -or ($details.DisplayName -and $_.'#text' -eq $details.DisplayName) }).Count -gt 0
+        } | Select-Object -First 12)
+        Write-Host ('Worker SCM events: from='+$since.ToString('o')+'; to='+$until.ToString('o')+'; matched='+$matched.Count+'; limits=256 provider events / 12 matching events')
+        foreach($event in $matched){
+            $message=$event.Message
+            # Do not print request objects or credentials, even in diagnostic errors.
+            if($p.worker_service.password){$message=$message.Replace([string]$p.worker_service.password,'[REDACTED]')}
+            Write-Host ('Worker SCM event: time='+$event.TimeCreated.ToString('o')+'; id='+$event.Id+'; record='+$event.RecordId+'; message='+$message)
+        }
+        if(!$matched.Count){Write-Host 'No matching SCM events available yet; this does not prove that service logon succeeded.'}
+    }catch{Write-Host 'Worker SCM events unavailable or not yet recorded; inspect the Windows System log for this attempt.'}
+}
+function Start-InstalledWorker($package,$installDir) {
+    $started=Get-Date
+    try{
+        Write-WorkerServiceDiagnostic 'before-start' $started
+        Set-Service -Name $service -StartupType Manual
         & (Join-Path $package 'runtime\Start-Worker.ps1') -InstallDir $installDir -WorkerNumber $number | Out-Host
         if(!$?){throw 'Worker startup script failed; inspect operation.log and Service Control Manager events'}
         $running=Get-CimInstance Win32_Service -Filter "Name='$service'"
         if(!$running -or $running.State -ne 'Running'){throw 'Worker service did not reach Running state'}
         $marker=Get-Content -Raw -LiteralPath (Join-Path $installDir 'logs\scheduler-service-ready.json') | ConvertFrom-Json
         if($marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker isolation/TLS readiness failed'}
+        Write-WorkerServiceDiagnostic 'ready' $started
         return $marker
     }catch{
-        $details=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue
-        Write-Host ('Worker startup/readiness failed: service='+$service+'; account='+$details.StartName+'; state='+$details.State+'; exit_code='+$details.ExitCode+'. Inspect Windows System / Service Control Manager events and the Worker logs.')
+        $startupFailure=$_
+        try{Write-WorkerServiceDiagnostic 'startup-failed' $started $startupFailure}catch{}
         throw
     }
 }
@@ -227,6 +269,7 @@ function Install-Worker {
     if($version.Trim() -ne '3.14.7'){throw 'Worker requires Python 3.14.7 exactly'}
     $identity=Resolve-ServiceIdentity $true
     $account=$identity.account;$credential=$identity.credential
+    Write-Host ('Worker service credentials: mode='+$identity.mode+'; account='+$account+'; credentials_present='+[bool]$credential)
     Set-Field $script:state 'worker_start' $null; Save-State
     if(!$script:state.pending_root){
         Set-Field $script:state 'pending_root' ('C:\ProdCast\Managed\'+$p.version+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
@@ -249,17 +292,21 @@ function Install-Worker {
             Set-Field $script:state 'pending_root' $installDir; Save-State
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
+        Write-Host 'Worker service credentials: creating replacement registration with supplied credentials.'
         Invoke-WorkerInstaller $package $installDir $python $credential
+        Write-Host 'Worker service credentials: installer completed; service logon is not verified until startup.'
     }
     elseif($identity.mode -in @('custom','managed') -and ($credential -or $svc.StartName -ne $account)){
         if(!$credential){throw 'A password is required to explicitly change service logon'}
         if($svc.State -ne 'Stopped'){throw 'Stop the selected Worker through its reviewed update/repair action before changing the service account'}
+        Write-Host 'Worker service credentials: reapplying supplied account and password to the existing stopped service.'
         $change=Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{StartName=$account;StartPassword=$credential.GetNetworkCredential().Password}
+        Write-Host ('Worker service credentials: Windows Change returned '+$change.ReturnValue+'; service logon is not verified until startup.')
         if($change.ReturnValue -ne 0){throw ('Service account change failed: '+$change.ReturnValue)}
         $sid=(New-Object Security.Principal.NTAccount($account)).Translate([Security.Principal.SecurityIdentifier]).Value
         & icacls.exe $installDir /grant:r ('*'+$sid+':(OI)(CI)(RX)') | Out-Null;Check-Native 'Grant service runtime access'
         foreach($folder in @('logs','jobs','recovery')){& icacls.exe (Join-Path $installDir $folder) /grant:r ('*'+$sid+':(OI)(CI)(M)') | Out-Null;Check-Native 'Grant service data access'}
-    }
+    }else{Write-Host 'Worker service credentials: preserving existing Windows service credentials; no password rewrite.'}
     if([int]$number -gt 2 -and $adapted){
         $runner=Join-Path $p.stage 'worker-service-runner.py'
         if((Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash.ToLowerInvariant() -ne '9e8e41e6b84f202c579e93bbad8c33cb81be38af64ae239c4f32ab2969a87ad2'){throw 'Worker adapter checksum mismatch'}
