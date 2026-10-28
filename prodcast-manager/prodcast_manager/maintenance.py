@@ -147,12 +147,14 @@ class Maintenance:
                             if recovery['vault']['installation_id']!=self.e.vault.data['installation_id']:raise ValueError('Backup belongs to another installation; import its profile first')
                             if (recovery['version'],recovery['manifest'])!=(version,manifest):raise ValueError('Restore requires the exact complete release recorded in this backup')
                             if recovery['vault']['secrets']!=self.e.vault.data['secrets']:raise ValueError('Encryption keys differ; import the original backup profile before restoring')
+                            media_scope=recovery.get('media_scope','legacy-full-media')
+                            if media_scope not in ('legacy-full-media','application-data-without-models-v1'):raise ValueError('Unsupported backup media scope')
                             source_sha=archive.sha(path)
                             if journal.get('source_sha256',source_sha)!=source_sha:raise ValueError('Resume restore with the original backup')
                             journal['source_sha256']=source_sha
                             for role,name in [('db','prodcast2.dump'),('app','media.tar.gz')]:
                                 source=folder/'data'/role/name;self.remotes[role].put(source)
-                                extra={'restore_file':{'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},'restore_manifest':manifest}
+                                extra={'restore_file':{'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},'restore_manifest':manifest,'media_scope':media_scope}
                                 self.action(role,'data-validate',**extra)
                         previous=journal.get('previous_runtime') or self.snapshot()
                         journal['previous_runtime']=previous;atomic_json(local,journal)
@@ -163,14 +165,16 @@ class Maintenance:
                             else:
                                 for role in (*worker_roles(self.e.c),'app'):self.action(role,'maintenance-stop')
                             if mode=='export':
+                                self.e.log('Application-data backup: database, workflows and uploaded data sources; model files and Worker installations are excluded. Keep a separate model backup or reimport models from SMB.')
                                 data=folder/'data'
                                 for role in ('db','app'):self.download(role,data)
                                 vault=copy.deepcopy(self.e.vault.data);vault.pop('ssh',None)
-                                record={'schema':1,'database_major':18,'version':version,'manifest':manifest,'site':self.e.c,'vault':vault}
+                                record={'schema':2,'database_major':18,'version':version,'manifest':manifest,'site':self.e.c,'vault':vault,'media_scope':'application-data-without-models-v1'}
                                 (data/'recovery.json').write_text(json.dumps(record),'utf-8')
                                 archive.pack(data,folder/'backup.zip');archive.encrypt(folder/'backup.zip',path,password);export_ok=True
                                 journal.update(backup_destination=str(Path(path).resolve()),backup_sha256=archive.sha(path));atomic_json(local,journal)
                             else:
+                                if media_scope=='application-data-without-models-v1':self.e.log('Restoring application data; existing model directories are preserved. Restore model files separately or reimport them from SMB.')
                                 # Keep the original safety copy when retrying a partial restore.
                                 for role in ('db','app'):
                                     marker='safety-'+role
@@ -178,7 +182,7 @@ class Maintenance:
                                         self.action(role,'data-export');journal['steps'].append(marker);atomic_json(local,journal)
                                 for role,name in [('db','prodcast2.dump'),('app','media.tar.gz')]:
                                     source=folder/'data'/role/name;self.remotes[role].put(source)
-                                    self.action(role,'data-restore',restore_file={'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},restore_manifest=manifest)
+                                    self.action(role,'data-restore',restore_file={'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},restore_manifest=manifest,media_scope=media_scope)
                                 export_ok=True
                         finally:
                             # A partially restored stack must remain stopped until a successful retry.

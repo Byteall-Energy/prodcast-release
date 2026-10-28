@@ -1,8 +1,11 @@
 import copy
+import ast
 import importlib.util
 import io
 import json
 import os
+import subprocess
+import shutil
 from pathlib import Path
 import tarfile
 from types import SimpleNamespace
@@ -11,6 +14,7 @@ import pytest
 from prodcast_manager import backup_archive as archive
 from prodcast_manager.directory import app_directory
 from prodcast_manager.engine import Engine,RESOURCES
+from prodcast_manager.engine import plan
 from prodcast_manager.config import example,topology_hash
 from prodcast_manager.maintenance import Maintenance
 
@@ -80,6 +84,103 @@ def test_ldap_mapping_enables_group_tls_and_omits_bind_password():
 
 spec=importlib.util.spec_from_file_location('maintenance_linux_test',RESOURCES/'maintenance_linux.py')
 linux=importlib.util.module_from_spec(spec);spec.loader.exec_module(linux)
+
+
+@pytest.mark.parametrize('mode',['update','backup'])
+def test_server_backup_plans_do_not_archive_worker_installations(mode):
+    actions=plan(mode,False,('worker1','worker2','worker3'))
+    assert ('db','backup') in actions and ('app','backup') in actions
+    assert not any(role.startswith('worker') and action=='backup' for role,action in actions)
+    if mode=='update':
+        assert actions.index(('worker1','stop'))<actions.index(('worker1','install'))
+
+
+def test_media_export_excludes_models_but_keeps_workflows_and_inputs(tmp_path,monkeypatch):
+    if not shutil.which('tar'):pytest.skip('tar required')
+    media=tmp_path/'media';config=tmp_path/'release'/'app';stage=tmp_path/'stage'
+    config.mkdir(parents=True);stage.mkdir();(config/'app.env').write_text('test-config')
+    for name in ('workflows/1.py','workflows/1.py.sig','workflows/1.ipynb','external_source_files/input.csv','models_files/large.rsa','official_models/nested/model.rsa'):
+        path=media/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(name)
+    def run(args):
+        if args[:3]==['docker','volume','inspect']:return json.dumps([{'Mountpoint':str(media)}])
+        subprocess.run([str(a) for a in args],check=True,capture_output=True)
+        return ''
+    monkeypatch.setattr(linux.os,'chown',lambda *a:None,raising=False)
+    m=SimpleNamespace(P={'role':'app','operation':'export','stage':str(stage)},ST={'version':'v1'},STATE=tmp_path/'state',run=run,old_target=lambda:config.parent,digest=archive.sha)
+    result=linux.export_data(m)
+    with tarfile.open(stage/'media.tar.gz','r:gz') as tar:
+        names={str(Path(i.name)).replace('\\','/').removeprefix('./') for i in tar if i.isfile()}
+    assert names=={'workflows/1.py','workflows/1.py.sig','workflows/1.ipynb','external_source_files/input.csv'}
+    assert result['files']['media.tar.gz']['sha256']==archive.sha(stage/'media.tar.gz')
+    assert (media/'models_files/large.rsa').is_file()
+
+    # Exercise the separate automatic-update backup implementation as well.
+    state=tmp_path/'update-state';state.mkdir();(state/'state.json').write_text('{}')
+    tree=ast.parse((RESOURCES/'linux.py').read_text('utf-8'))
+    function=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='backup')
+    namespace=dict(STATE=state,ROOT=tmp_path,P={'role':'app','operation':'update'},ST={'version':'v1'},
+                   old_target=lambda:config.parent,run=run,json=json,shutil=shutil,digest=archive.sha,
+                   write=lambda path,value:path.write_text(value))
+    exec(compile(ast.Module(body=[function],type_ignores=[]),'linux.py','exec'),namespace)
+    result=namespace['backup']()
+    with tarfile.open(Path(result['path'])/'media.tar.gz','r:gz') as tar:
+        update_names={str(Path(i.name)).replace('\\','/').removeprefix('./') for i in tar if i.isfile()}
+    assert update_names==names
+    assert (state/'backups/update/state.json').exists()
+
+
+@pytest.mark.parametrize('scope',['legacy-full-media',linux.MEDIA_SCOPE])
+def test_media_restore_preserves_separate_models_only_for_new_backups(tmp_path,monkeypatch,scope):
+    media=tmp_path/'media';stage=tmp_path/'stage';stage.mkdir()
+    for name in ('models_files/model.rsa','official_models/model.rsa','workflows/stale.py','external_source_files/stale.csv'):
+        path=media/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('keep-model-or-remove-stale')
+    source=stage/'media.tar.gz'
+    with tarfile.open(source,'w:gz') as tar:
+        item=tarfile.TarInfo('./workflows/restored.py');item.size=4;tar.addfile(item,io.BytesIO(b'code'))
+    monkeypatch.setattr(linux.os,'chown',lambda *a:None,raising=False)
+    m=SimpleNamespace(P={'role':'app','stage':str(stage),'media_scope':scope,'restore_manifest':'manifest','restore_file':{'name':source.name,'bytes':source.stat().st_size,'sha256':archive.sha(source)}},ST={'manifest':'manifest'},digest=archive.sha,run=lambda args:json.dumps([{'Mountpoint':str(media)}]))
+    linux.restore_data(m)
+    assert (media/'workflows/restored.py').read_bytes()==b'code'
+    assert not (media/'workflows/stale.py').exists()
+    assert not (media/'external_source_files/stale.csv').exists()
+    assert (media/'models_files/model.rsa').exists()==(scope==linux.MEDIA_SCOPE)
+    assert (media/'official_models/model.rsa').exists()==(scope==linux.MEDIA_SCOPE)
+
+
+def test_new_media_scope_rejects_model_entries_before_restore(tmp_path):
+    path=tmp_path/'media.tar.gz'
+    with tarfile.open(path,'w:gz') as tar:tar.addfile(tarfile.TarInfo('./models_files/file.rsa'))
+    with pytest.raises(RuntimeError,match='Model files'):linux.validate_media(path,exclude_models=True)
+
+
+def test_new_recovery_schema_roundtrips_and_requires_known_scope(backup,tmp_path):
+    data,_,_,record=backup
+    record.update(schema=2,media_scope=linux.MEDIA_SCOPE)
+    (data/'recovery.json').write_text(json.dumps(record))
+    path=tmp_path/'new.zip';archive.pack(data,path)
+    assert archive.unpack(path,tmp_path/'new-data')['media_scope']==linux.MEDIA_SCOPE
+    record['media_scope']='unknown';(data/'recovery.json').write_text(json.dumps(record))
+    path=tmp_path/'unknown.zip';archive.pack(data,path)
+    with pytest.raises(ValueError,match='media scope'):archive.unpack(path,tmp_path/'bad-scope')
+
+
+def test_portable_restore_sends_model_exclusion_scope_to_validation_and_restore(backup,tmp_path):
+    data,_,_,record=backup
+    record.update(schema=2,media_scope=linux.MEDIA_SCOPE)
+    (data/'recovery.json').write_text(json.dumps(record))
+    plain=tmp_path/'scoped.zip';archive.pack(data,plain)
+    encrypted=tmp_path/'scoped.pcbackup';archive.encrypt(plain,encrypted,'password-for-test')
+    calls=[]
+    class CaptureRemote(FakeRemote):
+        def action(self,payload,action,*args):
+            calls.append((self.role,action,dict(payload)))
+            return super().action(payload,action,*args)
+    FakeRemote.fail=None
+    e=fake_engine(tmp_path/'site');e.factory=CaptureRemote;e.vault.data['secrets']=record['vault']['secrets']
+    Maintenance(e).run('restore',encrypted,'password-for-test')
+    data_calls=[p for r,a,p in calls if a in ('data-validate','data-restore')]
+    assert len(data_calls)==4
+    assert all(p['media_scope']==linux.MEDIA_SCOPE for p in data_calls)
 
 
 @pytest.mark.parametrize('kind',['symlink','hardlink','parent','absolute'])

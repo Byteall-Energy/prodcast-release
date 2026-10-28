@@ -20,13 +20,13 @@ def plan(mode,install_ai=True,workers=None):
     optional=[('ai','preflight')]+([] if mode=='check' else [('ai',mode)]) if install_ai else []
     if mode=='status': return common+[(r,'status') for r in core]+optional
     if mode=='check': return common+optional
-    if mode=='backup': return common+[(r,'backup') for r in ('db','app')+workers]+optional
+    if mode=='backup': return common+[(r,'backup') for r in ('db','app')]+optional
     if mode=='repair':
         return common+[(r,'claim') for r in core]+[(r,'bootstrap') for r in ('db','app')]+[(r,'repair') for r in ('db','app')+workers]+[('app','verify'),('app','beat')]+[(r,'commit') for r in core]+([('ai','repair')] if install_ai else [])
     start=[(r,'claim') for r in core]
     if mode=='update':
         start += [('app','pause'),('app','drain')]+[(r,'stop') for r in workers]+[('app','stop')]
-        start += [(r,'backup') for r in ('db','app')+workers]
+        start += [(r,'backup') for r in ('db','app')]
     start += [(r,'bootstrap') for r in ('db','app')]
     start += [('db','install'),('app','configure'),('app','migrate'),('db','grants'),('app','start')]+[(r,'install') for r in workers]+[('app','verify'),('app','beat')]
     start += [(r,'commit') for r in core]

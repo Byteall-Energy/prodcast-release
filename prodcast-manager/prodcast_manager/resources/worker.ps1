@@ -579,30 +579,10 @@ function Dispatch {
             return @{stopped=$true;disabled=$true;live_state_verified=$true}
         }
         'backup' {
-            if(!$script:state.install_root){throw 'No managed Worker installation'}
-            $dest=Join-Path $root ('backups\'+$p.operation); Protect-Directory $dest
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            $archive=Join-Path $dest 'worker.zip'
-            if(!(Test-Path $archive)){
-                $partial=Join-Path $dest 'worker.zip.partial'
-                if(Test-Path -LiteralPath $partial){Remove-Item -LiteralPath $partial -Force}
-                [IO.Compression.ZipFile]::CreateFromDirectory($script:state.install_root,$partial)
-                $check=[IO.Compression.ZipFile]::OpenRead($partial)
-                try{
-                    if(!$check.Entries.Count){throw 'Empty backup'}
-                    foreach($entry in $check.Entries){
-                        if(!$entry.FullName.EndsWith('/')){
-                            $stream=$entry.Open()
-                            try{$stream.CopyTo([IO.Stream]::Null)}finally{$stream.Dispose()}
-                        }
-                    }
-                }finally{$check.Dispose()}
-                Move-Item -LiteralPath $partial -Destination $archive
-            }
-            $test=[IO.Compression.ZipFile]::OpenRead($archive)
-            try{if(!$test.Entries.Count){throw 'Empty backup'}}finally{$test.Dispose()}
-            Copy-Item -LiteralPath $stateFile -Destination (Join-Path $dest 'state.json') -Force
-            return @{path=$archive;sha256=(Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant();dpapi_machine_bound=$true}
+            # Compatibility for an older pending action: runtime is reinstallable,
+            # models are backed up separately, and no Worker ZIP is created.
+            Write-Host 'Worker backup skipped: runtime is reinstalled from the release; model files require a separate user backup.'
+            return @{skipped=$true;reason='reinstallable-worker-runtime';models_included=$false}
         }
         'status' {
             $svc=Get-CimInstance Win32_Service -Filter "Name='$service'"

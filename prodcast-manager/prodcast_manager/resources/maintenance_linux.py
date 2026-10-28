@@ -8,6 +8,9 @@ import tarfile
 import time
 from pathlib import Path,PurePosixPath
 
+MODEL_DIRECTORIES={'models_files','official_models'}
+MEDIA_SCOPE='application-data-without-models-v1'
+
 
 def owned_path(path,root):
     path=Path(path);root=Path(root)
@@ -42,7 +45,7 @@ def export_data(m):
         names=['prodcast2.dump']
     elif m.P['role']=='app':
         volume=json.loads(m.run(['docker','volume','inspect','prodcast-managed-media']))[0]['Mountpoint']
-        m.run(['tar','-czf',folder/'media.tar.gz','-C',volume,'.'])
+        m.run(['tar','-czf',folder/'media.tar.gz','--exclude=./models_files','--exclude=./official_models','-C',volume,'.'])
         m.run(['tar','-czf',folder/'configuration.tar.gz','-C',m.old_target(),'app'])
         names=['media.tar.gz','configuration.tar.gz']
     else:raise RuntimeError('Data export is supported only on App and DB')
@@ -55,18 +58,21 @@ def export_data(m):
     return {'files':output,'server_backup':str(folder)}
 
 
-def validate_media(path):
+def validate_media(path,exclude_models=False):
     seen=set()
     with tarfile.open(path,'r:gz') as tar:
         for member in tar:
             name=PurePosixPath(member.name)
             if name.is_absolute() or '..' in name.parts or not (member.isfile() or member.isdir()):raise RuntimeError('Unsafe media backup entry')
+            if exclude_models and name.parts and name.parts[0] in MODEL_DIRECTORIES:raise RuntimeError('Model files are not part of this application-data backup')
             key=str(name)
             if key in seen:raise RuntimeError('Duplicate media backup entry')
             seen.add(key)
 
 
 def validate_restore(m):
+    scope=m.P.get('media_scope','legacy-full-media')
+    if scope not in ('legacy-full-media',MEDIA_SCOPE):raise RuntimeError('Unsupported backup media scope')
     spec=m.P['restore_file'];name=spec['name']
     expected='prodcast2.dump' if m.P['role']=='db' else 'media.tar.gz'
     if name!=expected:raise RuntimeError('Unexpected restore file')
@@ -76,7 +82,7 @@ def validate_restore(m):
     if m.P['role']=='db':
         cmd=['docker','compose','-p','prodcast-managed-db','-f',str(m.ROOT/'db/compose.json'),'exec','-T','--user','postgres','postgres','pg_restore','--list']
         with path.open('rb') as src:subprocess.run(cmd,stdin=src,stdout=subprocess.DEVNULL,stderr=m.LOG,check=True)
-    else:validate_media(path)
+    else:validate_media(path,exclude_models=scope==MEDIA_SCOPE)
     return {'validated':True}
 
 
@@ -94,6 +100,7 @@ def restore_data(m):
         volume=Path(info['Mountpoint']);owned_path(volume,volume)
         # A server-side safety copy has already been made before this point.
         for child in volume.iterdir():
+            if m.P.get('media_scope')==MEDIA_SCOPE and child.name in MODEL_DIRECTORIES:continue
             if child.is_symlink() or child.is_file():child.unlink()
             elif child.is_dir():shutil.rmtree(child)
             else:raise RuntimeError('Unexpected media entry')

@@ -708,6 +708,7 @@ class DesktopWindow:
 
     def build_backups(self):
         self.note('A server backup is not a portable encrypted archive. Restore replaces data; reset is not a database rollback. Keep the original profile and logs.','Бэкап на сервере — не переносимый зашифрованный архив. Восстановление заменяет данные; сброс не является откатом БД. Сохраняйте исходный профиль и журналы.')
+        self.note('Backups keep the database, workflow files and uploaded data sources. Worker installations and model files (models_files/, official_models/) are excluded. Back up models separately or import them again from SMB. New archives preserve existing model directories during restore and require this Manager version or newer.','Бэкапы сохраняют базу данных, файлы workflows и загруженные источники данных. Установки Workers и файлы моделей (models_files/, official_models/) исключены. Сохраняйте модели отдельно или импортируйте их из SMB. При восстановлении новых архивов существующие папки моделей сохраняются; требуется эта или более новая версия Manager.')
         form=self.group('Portable archive','Переносимый архив')
         self.edit(form,'Archive path','Путь архива',self.maintenance,'path',browse='backup')
         self.button(form,'Choose export destination…','Выбрать путь экспорта…',self.export_path)

@@ -68,6 +68,7 @@ def test_worker_only_update_does_not_restart_app_db_or_other_workers(deployed):
     assert set(app_actions)=={'preflight','drain-workers','resume-workers','verify'}
     assert all(a=='preflight' for r,a,p in e.test_calls if r in ('db','worker2'))
     assert not any(a in ('pause','stop','configure','start','bootstrap','migrate','commit') for a in app_actions)
+    assert not any(a=='backup' for r,a,p in e.test_calls)
 
 
 def test_db_only_update_does_not_stop_app_or_workers(deployed):
@@ -128,7 +129,7 @@ def test_service_credential_failure_is_before_any_stop(deployed):
 
 
 def test_failed_worker_update_restores_consumers_without_restarting_app(deployed):
-    e=deployed;change(e,'worker1');e.test_remote.fail=('worker1','backup')
+    e=deployed;change(e,'worker1');e.test_remote.fail=('worker1','install')
     with pytest.raises(RuntimeError):e.run('update')
     assert any(r=='app' and a=='resume-workers' for r,a,p in e.test_calls)
     assert not any(r=='app' and a in ('stop','start','pause') for r,a,p in e.test_calls)

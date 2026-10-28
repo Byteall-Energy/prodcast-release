@@ -99,5 +99,6 @@ def unpack(source,destination):
                 os.chmod(path,0o600);shutil.copyfileobj(src,dst,CHUNK)
             if sha(path)!=expected['sha256']:raise ValueError('Backup checksum mismatch')
     recovery=json.loads((destination/'recovery.json').read_text('utf-8'))
-    if recovery.get('schema')!=1 or recovery.get('database_major')!=18:raise ValueError('Unsupported recovery format')
+    if recovery.get('schema') not in (1,2) or recovery.get('database_major')!=18:raise ValueError('Unsupported recovery format')
+    if recovery['schema']==2 and recovery.get('media_scope')!='application-data-without-models-v1':raise ValueError('Unsupported backup media scope')
     return recovery

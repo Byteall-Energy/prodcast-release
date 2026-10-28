@@ -138,7 +138,7 @@ def update_actions(changed):
     steps += [(r,'stop') for r in workers]
     # App schema migrations still need a DB backup; this never restarts or
     # reconfigures the unchanged DB service group.
-    steps += [(r,'backup') for r in ('db','app')+workers if r in changed or r=='db' and 'app' in changed]
+    steps += [(r,'backup') for r in ('db','app') if r in changed or r=='db' and 'app' in changed]
     steps += [(r,'bootstrap') for r in ('db','app') if r in changed]
     if 'db' in changed:steps += [('db','install'),('db','grants')]
     if 'app' in changed:steps += [('app','configure'),('app','migrate'),('app','start')]
