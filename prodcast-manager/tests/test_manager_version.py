@@ -25,7 +25,9 @@ def test_missing_declaration_preserved(tmp_path):
 
 def test_workflow_stamps_before_build_and_verifies_before_rename():
     workflow=(Path(__file__).resolve().parents[2]/'.github/workflows/release.yml').read_text()
-    assert workflow.index('Set internal Manager version from release input')<workflow.index('Build and smoke-test one-file Manager')
+    assert workflow.index('Set internal Manager version from release input')<workflow.index('name: Test Manager')<workflow.index('Build and smoke-test one-file Manager')
+    assert './build.ps1 -Python python -TestsOnly' in workflow
+    assert './build.ps1 -Python python -Output dist -SkipTests' in workflow
     assert workflow.index('--verify-exe prodcast-manager/dist/ProdCast-Manager.exe')<workflow.index('Move-Item -LiteralPath prodcast-manager/dist/ProdCast-Manager.exe')
     assert 'path: prodcast-manager/dist/ProdCast-Manager-${{ env.RELEASE_VERSION }}.exe' in workflow
 
@@ -33,7 +35,9 @@ def test_workflow_stamps_before_build_and_verifies_before_rename():
 def test_latest_workflow_resolves_and_verifies_version_before_upload():
     workflow=(Path(__file__).resolve().parents[2]/'.github/workflows/build-latest-manager.yml').read_text()
     assert 'REQUESTED_MANAGER_VERSION: ${{ inputs.version }}' in workflow
-    assert workflow.index('Resolve internal Manager version')<workflow.index('Build, test and smoke-test Manager')
+    assert workflow.index('Resolve internal Manager version')<workflow.index('name: Test Manager')<workflow.index('Build and smoke-test Manager')
+    assert './build.ps1 -Python python -TestsOnly' in workflow
+    assert './build.ps1 -Python python -Output dist -SkipTests' in workflow
     assert workflow.index('--verify-exe dist/ProdCast-Manager.exe')<workflow.index('Move-Item -LiteralPath dist/ProdCast-Manager.exe')
     assert 'path: prodcast-manager/dist/ProdCast-Manager-v${{ env.MANAGER_VERSION }}.exe' in workflow
     assert 'path: prodcast-manager/dist/*.exe' not in workflow

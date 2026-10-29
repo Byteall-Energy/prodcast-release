@@ -354,7 +354,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
       - name: Install locked build dependencies
         working-directory: prodcast-manager
         run: python -m pip install -r requirements-build.lock.txt
@@ -362,10 +362,22 @@ jobs:
         working-directory: prodcast-manager
         shell: pwsh
         run: python release/manager_version.py "$env:RELEASE_VERSION"
+      - name: Test Manager
+        working-directory: prodcast-manager
+        shell: pwsh
+        run: ./build.ps1 -Python python -TestsOnly
+      - name: Upload Manager test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-test-results
+          path: prodcast-manager/.build/test-results/*.xml
+          if-no-files-found: warn
+          retention-days: 7
       - name: Build and smoke-test one-file Manager
         working-directory: prodcast-manager
         shell: pwsh
-        run: ./build.ps1 -Python python -Output dist
+        run: ./build.ps1 -Python python -Output dist -SkipTests
       - name: Stage versioned executable
         shell: pwsh
         run: |

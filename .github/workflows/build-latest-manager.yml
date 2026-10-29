@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
       - name: Install locked build dependencies
         run: python -m pip install -r requirements-build.lock.txt
       - name: Resolve internal Manager version
@@ -47,8 +47,18 @@ jobs:
           $version = python -c "from prodcast_manager import __version__; print(__version__)"
           if ($LASTEXITCODE) { throw 'Could not read Manager version' }
           "MANAGER_VERSION=$version" | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Build, test and smoke-test Manager
-        run: ./build.ps1 -Python python -Output dist
+      - name: Test Manager
+        run: ./build.ps1 -Python python -TestsOnly
+      - name: Upload Manager test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-test-results
+          path: prodcast-manager/.build/test-results/*.xml
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Build and smoke-test Manager
+        run: ./build.ps1 -Python python -Output dist -SkipTests
       - name: Verify and stage versioned executable
         run: |
           python release/manager_version.py "$env:MANAGER_VERSION" --verify-exe dist/ProdCast-Manager.exe

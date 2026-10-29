@@ -1,16 +1,22 @@
-param([string]$Python='python',[string]$Output=(Join-Path $PSScriptRoot 'dist'),[switch]$SkipTests,[switch]$SkipSmoke)
+param([string]$Python='python',[string]$Output=(Join-Path $PSScriptRoot 'dist'),[switch]$SkipTests,[switch]$SkipSmoke,[switch]$TestsOnly)
 $ErrorActionPreference='Stop'
 $build=Join-Path $PSScriptRoot '.build'
+if($TestsOnly -and $SkipTests){throw 'TestsOnly cannot be combined with SkipTests'}
 if(-not $SkipTests){
-    & $Python -m pytest (Join-Path $PSScriptRoot 'tests') -q
+    $reports=Join-Path $build 'test-results'
+    New-Item -ItemType Directory -Path $reports -Force | Out-Null
+    $retryReport=Join-Path $reports 'retry.xml'
+    if(Test-Path -LiteralPath $retryReport){Remove-Item -LiteralPath $retryReport -Force}
+    & $Python -m pytest (Join-Path $PSScriptRoot 'tests') -q --junitxml (Join-Path $reports 'full-suite.xml')
     if($LASTEXITCODE){
         Write-Warning 'Test run failed; retrying only failed tests once to tolerate transient Windows GUI initialization errors.'
-        & $Python -m pytest (Join-Path $PSScriptRoot 'tests') -q --last-failed --last-failed-no-failures none
+        & $Python -m pytest (Join-Path $PSScriptRoot 'tests') -q --last-failed --last-failed-no-failures none --junitxml $retryReport
         if($LASTEXITCODE){throw 'Tests failed after one targeted retry'}
     }
     & $Python (Join-Path $PSScriptRoot 'release/check_tk_ui.py')
     if($LASTEXITCODE){throw 'Tk workspace integration checks failed'}
 }
+if($TestsOnly){return}
 $bundles=Join-Path $build 'onefile'
 & $Python -m PyInstaller --noconfirm --clean --distpath $bundles --workpath (Join-Path $build 'gui') (Join-Path $PSScriptRoot 'release/manager.spec')
 if($LASTEXITCODE){throw 'GUI build failed'}

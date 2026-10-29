@@ -34,6 +34,17 @@ build artifacts and Agent CI SBOM reports are retained for seven days. Published
 release assets are separate from Actions artifacts and do not expire under this
 policy.
 
+Both Manager jobs (`Build latest Manager` and the Manager job in the complete
+release workflow) use Python 3.11.9 and run the shared `build.ps1 -TestsOnly`
+gate before packaging. Packaging uses `-SkipTests` only after that gate passes;
+frozen-runtime and executable startup checks still run during packaging.
+The separate `manager-test-results` artifact is retained for seven days and is
+uploaded even when tests fail. It contains `full-suite.xml` and, when a targeted
+retry was necessary, `retry.xml`; inspect both reports to distinguish an initial
+transient GUI failure from a persistent failure. EXE artifacts still contain
+only the versioned Manager executable. Driver installation remains disabled;
+progress tests exercise active AI steps and reject obsolete driver markers.
+
 The workflow freezes all five full commit SHAs before starting parallel jobs.
 Every checkout uses its frozen SHA even if `main` moves later. It then builds:
 
