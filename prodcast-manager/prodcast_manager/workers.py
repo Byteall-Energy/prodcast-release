@@ -9,6 +9,7 @@ from pathlib import Path
 from .config import (atomic_json, file_lock, topology_hash, validate, validate_membership,
                      worker_addresses, worker_roles, core_roles)
 from .portable import runtime_config, save_config
+from .operation_history import journal_blocks_changes
 
 JOURNAL='workers-journal.json'
 
@@ -57,7 +58,7 @@ def add_workers(directory, proposed, vault, release, log=print, remote_factory=N
     directory=Path(directory);path=directory/JOURNAL;remotes={}
     with file_lock(directory/'operation.lock'):
         for name in ('journal.json','ai-journal.json','maintenance-journal.json','app-tls-journal.json','worker-action-journal.json'):
-            if read_json(directory/name).get('status') in ('running','failed'):
+            if journal_blocks_changes(name,read_json(directory/name)):
                 raise ValueError('Complete the pending operation first: '+name)
         journal=read_json(path);pending=journal.get('status') in ('running','failed')
         if journal.get('status')=='failed' and journal.get('phase')=='preflight':

@@ -1172,7 +1172,7 @@ def backup():
             if (old_target()/'license').is_dir():run(['tar','-czf',folder/'license.tar.gz','-C',old_target(),'license'])
             if (STATE/'app-activation').is_dir():run(['tar','-czf',folder/'activation.tar.gz','-C',STATE,'app-activation'])
             volume=json.loads(run(['docker','volume','inspect','prodcast-managed-media']))[0]['Mountpoint']
-            run(['tar','-czf',folder/'media.tar.gz','--exclude=./models_files','--exclude=./official_models','-C',volume,'.'])
+            run(['tar','-czf',folder/'media.tar.gz','--exclude=./models_files','--exclude=./official_models','--exclude=./.prodcast-restore','-C',volume,'.'])
             if (STATE/'license-client.json').exists(): shutil.copy2(STATE/'license-client.json',folder/'license-client.json')
         if role=='ai' and (ROOT/'ai-data/documents').is_dir():
             run(['tar','-czf',folder/'documents.tar.gz','-C',ROOT/'ai-data','documents'])

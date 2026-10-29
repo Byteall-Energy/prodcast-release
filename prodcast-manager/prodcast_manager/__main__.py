@@ -33,7 +33,7 @@ def main():
         from .tk_ui import main as gui
         gui();return
     if a.action=='self-test':
-        for name in ('linux.py','worker.ps1','worker-service-runner.py','app.env.in','worker-grants.sql','directory_probe.py','maintenance_linux.py','workers_linux.py','ai-documents.sql'):assert (RESOURCES/name).stat().st_size>100
+        for name in ('linux.py','worker.ps1','worker-service-runner.py','app.env.in','worker-grants.sql','directory_probe.py','maintenance_linux.py','restore_compatibility.py','workers_linux.py','ai-documents.sql'):assert (RESOURCES/name).stat().st_size>100
         assert len(list((RESOURCES/'ldap_deps').glob('*.whl')))==2
         compile((RESOURCES/'linux.py').read_text('utf-8'),'linux.py','exec')
         validate(example())

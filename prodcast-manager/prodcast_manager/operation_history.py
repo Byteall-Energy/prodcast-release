@@ -22,6 +22,32 @@ def target_of(text):
     return match.group(1).lower() if match else ''
 
 
+def journal_blocks_changes(name,value):
+    """A failed export is informational once services and remote leases recovered."""
+    if value.get('status') not in ('running','failed','unreadable'):return False
+    if name=='maintenance-journal.json' and value.get('mode')=='export' and value.get('status')=='failed':
+        services_safe=value.get('services_recovered') is True or not (value.get('previous_runtime') or value.get('quiesced'))
+        return not (services_safe and value.get('leases_released') is True)
+    return True
+
+
+def operation_state(name,value):
+    blocking=journal_blocks_changes(name,value)
+    if not blocking:
+        code='export_recovered'
+        reason='The backup export failed. Services are restored and server locks are released. Retry export when ready; other changes are allowed.'
+    elif value.get('status')=='unreadable':
+        code='unreadable'
+        reason='The recovery journal cannot be read. Restore or inspect it before making conflicting changes.'
+    elif name=='maintenance-journal.json' and value.get('mode')=='export':
+        code='recovery_unconfirmed'
+        reason='Service recovery or server lock release is not confirmed. Retry the backup export before making conflicting changes.'
+    else:
+        code='incomplete_changes'
+        reason='This operation may leave services paused or retain server locks. Resume its original action, or use its supported stop/recovery action before conflicting changes.'
+    return dict(state='needs_attention',blocks_changes=blocking,reason_code=code,blocking_reason=reason)
+
+
 def pending_operations(directory):
     """Read all supported journals without changing any recovery state."""
     result = []
@@ -36,11 +62,29 @@ def pending_operations(directory):
             if value.get('status') in ('running', 'failed'):
                 result.append(dict(journal=name, mode=value.get('mode', ''),
                                    status=value['status'], operation=value.get('operation', ''),
-                                   role=value.get('role', ''), phase=value.get('phase', '')))
+                                   role=value.get('role', ''), phase=value.get('phase', ''),**operation_state(name,value)))
         except (OSError, ValueError):
             result.append(dict(journal=name, status='unreadable', mode='', role='',
-                               operation='', phase=''))
+                               operation='', phase='',**operation_state(name,{'status':'unreadable'})))
     return result
+
+
+def operation_summary(directory,active=None):
+    entries=pending_operations(directory)
+    if active:
+        mode=active.get('mode','')
+        family=('maintenance-journal.json' if mode in ('export','restore','reset-keep','reset-full') else
+                'ai-journal.json' if mode=='ai' else 'app-tls-journal.json' if mode=='app-tls' else
+                'workers-journal.json' if mode=='add-workers' else 'worker-action-journal.json' if mode.startswith('worker-') else
+                'journal.json' if mode in ('install','update','repair') else '')
+        entry=next((x for x in entries if x['journal']==family),None)
+        if entry is None:
+            entry=dict(journal=family,mode=mode,status='running',operation=active.get('id',''),role='',phase='')
+            entries.insert(0,entry)
+        entry.update(state='running',blocks_changes=True,reason_code='active',blocking_reason='An operation is executing in this Manager. Wait for it to finish before starting another change.')
+    return dict(running=sum(x['state']=='running' for x in entries),
+                needs_attention=sum(x['state']=='needs_attention' for x in entries),
+                blocking=sum(x['blocks_changes'] for x in entries),entries=entries)
 
 
 class OperationHistory:

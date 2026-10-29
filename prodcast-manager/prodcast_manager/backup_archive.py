@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import struct
 import zipfile
 from pathlib import Path
@@ -11,6 +12,22 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 MAGIC=b'PRODCAST-BACKUP-1\n'
 CHUNK=1024*1024
 FILES={'recovery.json','manifest.json','db/prodcast2.dump','app/media.tar.gz','app/configuration.tar.gz'}
+
+
+def release_order(value):
+    if not isinstance(value,str):raise ValueError('Unsupported App release format in restore metadata')
+    match=re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)(?:-rc[.-](\d+))?',value or '')
+    if not match:raise ValueError('Unsupported App release format in restore metadata')
+    return tuple(int(match[i]) for i in (1,2,3))+(1 if match[4] is None else 0,int(match[4] or 0))
+
+
+def validate_database_metadata(value):
+    if not isinstance(value,dict) or type(value.get('major')) is not int or not 10<=value['major']<100:raise ValueError('Invalid PostgreSQL backup version metadata')
+    if not isinstance(value.get('extensions'),dict) or any(not isinstance(k,str) or not isinstance(v,str) or not k or not v for k,v in value['extensions'].items()):raise ValueError('Invalid PostgreSQL extension metadata')
+    rows=value.get('applied_migrations')
+    if not isinstance(rows,list) or any(not isinstance(row,list) or len(row)!=2 or not all(isinstance(x,str) and x for x in row) for row in rows):raise ValueError('Invalid database migration metadata')
+    if type(value.get('bytes')) is not int or value['bytes']<0:raise ValueError('Invalid database backup size metadata')
+    return value
 
 
 def key(password,salt):
@@ -99,11 +116,13 @@ def unpack(source,destination):
                 os.chmod(path,0o600);shutil.copyfileobj(src,dst,CHUNK)
             if sha(path)!=expected['sha256']:raise ValueError('Backup checksum mismatch')
     recovery=json.loads((destination/'recovery.json').read_text('utf-8'))
-    if recovery.get('schema') not in (1,2,3) or recovery.get('database_major')!=18:raise ValueError('Unsupported recovery format')
-    if recovery['schema'] in (2,3) and recovery.get('media_scope')!='application-data-without-models-v1':raise ValueError('Unsupported backup media scope')
-    if recovery['schema']==3:
+    if recovery.get('schema') not in (1,2,3,4) or type(recovery.get('database_major')) is not int or not 10<=recovery['database_major']<100:raise ValueError('Unsupported recovery format')
+    if recovery['schema'] in (2,3,4) and recovery.get('media_scope')!='application-data-without-models-v1':raise ValueError('Unsupported backup media scope')
+    if recovery['schema'] in (3,4):
         components=recovery.get('component_versions')
         if not isinstance(components,dict) or not {'app','db'}<=set(components) or any(not isinstance(v,dict) or set(v)!={'version','manifest'} or not all(isinstance(x,str) and x for x in v.values()) for v in components.values()):
             raise ValueError('Invalid backup component release records')
         if components['app']!={'version':recovery.get('version'),'manifest':recovery.get('manifest')}:raise ValueError('Backup App release record mismatch')
+    if recovery['schema']==4:
+        if validate_database_metadata(recovery.get('database'))['major']!=recovery['database_major']:raise ValueError('Conflicting database backup version metadata')
     return recovery

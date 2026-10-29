@@ -18,6 +18,8 @@ from prodcast_manager.engine import plan
 from prodcast_manager.config import example,topology_hash
 from prodcast_manager.maintenance import Maintenance,read_backup
 
+DATABASE_METADATA={'major':18,'extensions':{'plpgsql':'1.0'},'applied_migrations':[['apiapp','0001_initial']],'bytes':1024}
+
 
 @pytest.fixture
 def backup(tmp_path):
@@ -226,6 +228,8 @@ class FakeRemote:
         self.actions.append(action)
         if self.fail==(self.role,action):raise RuntimeError('simulated failure')
         if action=='preflight':return {'managed':True,'version':'v0.5.0-rc.2','manifest':'a'*64}
+        if action=='data-prepare':return {'switched':False,'database':'prodcast_restore_'+payload['operation'][:24]}
+        if action=='data-migrate':return {'database':payload['restore_staging_database'],'migrated':True}
         return {}
 
 
@@ -291,6 +295,29 @@ def test_restore_wrong_identity_never_stops_services(backup,tmp_path):
     assert not any('pause' in r.actions or 'data-restore' in r.actions for r in FakeRemote.instances)
 
 
+def test_failed_staging_migration_never_promotes_database_or_media(backup,tmp_path):
+    FakeRemote.instances=[];FakeRemote.fail=('app','data-migrate')
+    e=fake_engine(tmp_path/'site');e.vault.data['secrets']=backup[3]['vault']['secrets']
+    try:
+        with pytest.raises(RuntimeError,match='simulated'):
+            Maintenance(e).run('restore',backup[2],'password-for-test')
+        assert not any('data-restore' in r.actions or 'maintenance-resume' in r.actions for r in FakeRemote.instances)
+        assert any('data-prepare' in r.actions for r in FakeRemote.instances)
+    finally:FakeRemote.fail=None
+
+
+def test_newer_app_backup_rejected_before_stopping_services(backup,tmp_path):
+    FakeRemote.instances=[];FakeRemote.fail=None
+    e=fake_engine(tmp_path/'site');data,_,_,record=backup
+    e.vault.data['secrets']=record['vault']['secrets'];record['version']='v99.0.0'
+    (data/'recovery.json').write_text(json.dumps(record))
+    plain=tmp_path/'new.zip';encrypted=tmp_path/'new.pcbackup'
+    archive.pack(data,plain);archive.encrypt(plain,encrypted,'password-for-test')
+    with pytest.raises(ValueError,match='newer App backup'):
+        Maintenance(e).run('restore',encrypted,'password-for-test')
+    assert not any('pause' in r.actions or 'data-prepare' in r.actions for r in FakeRemote.instances)
+
+
 def selective_installation(tmp_path):
     e=fake_engine(tmp_path)
     components={r:{'version':'v0.7.1','manifest':'b'*64} for r in e.c['hosts'] if r!='ai'}
@@ -312,6 +339,7 @@ def test_export_completed_selective_update_and_retry_failed_version_gate(tmp_pat
     e,components,calls=selective_installation(tmp_path/'site')
     (e.dir/'maintenance-journal.json').write_text(json.dumps({'status':'failed','mode':'export','operation':'original-failed-export','steps':[]}))
     def download(self,role,folder):
+        if role=='db':self.database_metadata=copy.deepcopy(DATABASE_METADATA)
         for name in (['prodcast2.dump'] if role=='db' else ['media.tar.gz','configuration.tar.gz']):
             p=folder/role/name;p.parent.mkdir(exist_ok=True,parents=True);p.write_bytes(b'test-backup')
     monkeypatch.setattr(Maintenance,'download',download)
@@ -319,7 +347,8 @@ def test_export_completed_selective_update_and_retry_failed_version_gate(tmp_pat
     assert result['status']=='complete' and result['archive']==str(path.resolve())
     assert result['bytes']==path.stat().st_size and result['services_recovered'] is True
     record=read_backup(path,'password-for-test',tmp_path)
-    assert record['schema']==3 and record['component_versions']==components
+    assert record['schema']==4 and record['component_versions']==components
+    assert record['database']==DATABASE_METADATA
     assert record['version']=='v0.7.1' and record['manifest']=='b'*64
     done=json.loads((e.dir/'maintenance-journal.json').read_text())
     assert done['status']=='complete' and done['operation']=='original-failed-export'
@@ -327,7 +356,7 @@ def test_export_completed_selective_update_and_retry_failed_version_gate(tmp_pat
     calls.clear();Maintenance(e).run('restore',path,'password-for-test')
     restore=[(r,p) for r,a,p in calls if a in ('data-validate','data-restore')]
     assert len(restore)==4
-    assert all(p['restore_manifest']==components[r]['manifest'] for r,p in restore)
+    assert all(p['restore_target']==components[r] and p['restore_strategy']=='validated-forward-v1' for r,p in restore)
 
 
 @pytest.mark.parametrize('failure',['unrecorded-release','missing-records','wrong-installation','pending-core'])
@@ -341,7 +370,7 @@ def test_unverified_or_pending_selective_installation_stops_before_quiescing(tmp
     assert not any(a in ('pause','drain','maintenance-stop','data-export','data-restore') for r,a,p in calls)
 
 
-def test_selective_restore_rejects_wrong_component_before_data_changes(backup,tmp_path):
+def test_restore_does_not_require_db_deployment_label_to_match(backup,tmp_path):
     e,components,calls=selective_installation(tmp_path/'site')
     data,_,_,record=backup
     record.update(schema=3,media_scope=linux.MEDIA_SCOPE,version=components['app']['version'],manifest=components['app']['manifest'],component_versions=copy.deepcopy(components))
@@ -350,11 +379,22 @@ def test_selective_restore_rejects_wrong_component_before_data_changes(backup,tm
     (data/'recovery.json').write_text(json.dumps(record))
     plain=tmp_path/'wrong.zip';archive.pack(data,plain)
     encrypted=tmp_path/'wrong.pcbackup';archive.encrypt(plain,encrypted,'password-for-test')
-    with pytest.raises(ValueError,match='db: restore requires'):Maintenance(e).run('restore',encrypted,'password-for-test')
-    assert not any(a in ('pause','drain','maintenance-stop','data-restore') for r,a,p in calls)
+    Maintenance(e).run('restore',encrypted,'password-for-test')
+    assert any(r=='db' and a=='data-prepare' for r,a,p in calls)
+    assert any(r=='app' and a=='data-migrate' for r,a,p in calls)
+
+
+def test_older_app_backup_restores_into_newer_app_with_current_worker_credentials(backup,tmp_path):
+    e,components,calls=selective_installation(tmp_path/'site')
+    e.vault.data['secrets']={**backup[3]['vault']['secrets'],'WORKER_01_PASSWORD':'new-password'}
+    Maintenance(e).run('restore',backup[2],'password-for-test')
+    assert any(a=='data-migrate' and p['restore_target']==components['app'] for r,a,p in calls)
+    assert any(a=='data-restore' and r=='db' for r,a,p in calls)
+    assert all(p['restore_target']==components[r] for r,a,p in calls if a=='data-restore')
 
 
 def fake_download(self,role,folder):
+    if role=='db':self.database_metadata=copy.deepcopy(DATABASE_METADATA)
     for name in (['prodcast2.dump'] if role=='db' else ['media.tar.gz','configuration.tar.gz']):
         p=folder/role/name;p.parent.mkdir(exist_ok=True,parents=True);p.write_bytes(b'backup')
 
@@ -385,6 +425,7 @@ def test_original_export_error_survives_recovery_failure_and_pending_clears_on_r
     assert any('secondary recovery failure' in line for line in logs)
     journal=json.loads((e.dir/'maintenance-journal.json').read_text())
     assert journal['archive_saved'] is False and journal['services_recovered'] is False
+    assert journal['leases_released'] is True
     assert len(pending_operations(e.dir))==1
     monkeypatch.setattr(Maintenance,'download',fake_download)
     monkeypatch.setattr(Maintenance,'resume',lambda *args:None)
@@ -392,6 +433,49 @@ def test_original_export_error_survives_recovery_failure_and_pending_clears_on_r
     done=json.loads((e.dir/'maintenance-journal.json').read_text())
     assert done['operation']==journal['operation'] and done['status']=='complete'
     assert not pending_operations(e.dir)
+
+
+def test_recovered_failed_export_is_informational_and_other_actions_are_allowed(tmp_path,monkeypatch):
+    from unittest.mock import Mock
+    from prodcast_manager.operation_history import operation_summary
+    FakeRemote.fail=None;e=fake_engine(tmp_path/'site')
+    monkeypatch.setattr(Maintenance,'download',lambda *args:(_ for _ in ()).throw(ValueError('export failed')))
+    with pytest.raises(ValueError):Maintenance(e).run('export',tmp_path/'failed.pcbackup','password-for-test')
+    summary=operation_summary(e.dir)
+    assert summary['needs_attention']==1 and summary['blocking']==0
+    e._run=Mock(return_value=[])
+    e.run('backup');e._run.assert_called_once_with('backup')
+    Maintenance(e).run('reset-keep')
+    assert json.loads((e.dir/'maintenance-journal.json').read_text())['mode']=='reset-keep'
+    assert list((e.dir/'history').glob('maintenance-*.json'))
+
+
+def test_export_lease_release_failure_stays_blocking(tmp_path,monkeypatch):
+    from prodcast_manager.operation_history import operation_summary
+    FakeRemote.fail=('app','maintenance-release');e=fake_engine(tmp_path/'site')
+    monkeypatch.setattr(Maintenance,'download',lambda *args:(_ for _ in ()).throw(ValueError('export failed')))
+    try:
+        with pytest.raises(ValueError):Maintenance(e).run('export',tmp_path/'failed.pcbackup','password-for-test')
+        assert operation_summary(e.dir)['blocking']==1
+        assert json.loads((e.dir/'maintenance-journal.json').read_text())['leases_released'] is False
+    finally:FakeRemote.fail=None
+
+
+def test_recovered_failed_export_can_retry_after_another_component_update(tmp_path,monkeypatch):
+    e,components,calls=selective_installation(tmp_path/'site')
+    monkeypatch.setattr(Maintenance,'download',lambda *args:(_ for _ in ()).throw(ValueError('export failed')))
+    path=tmp_path/'retry.pcbackup'
+    with pytest.raises(ValueError):Maintenance(e).run('export',path,'password-for-test')
+    components['db']={'version':'v0.6.7','manifest':'d'*64}
+    e.vault.data['deployment_components']['roles']['db']=dict(components['db'])
+    calls.clear();monkeypatch.setattr(Maintenance,'download',fake_download)
+    result=Maintenance(e).run('export',path,'password-for-test')
+    assert result['status']=='complete'
+    assert any(a=='maintenance-snapshot' for r,a,p in calls)
+    record=read_backup(path,'password-for-test',tmp_path)
+    assert record['component_versions']['db']==components['db']
+    archived=next((e.dir/'history').glob('export-before-component-change-*.json'))
+    assert json.loads(archived.read_text())['status']=='failed'
 
 
 def test_saved_archive_recovery_failure_retries_only_recovery(tmp_path,monkeypatch):

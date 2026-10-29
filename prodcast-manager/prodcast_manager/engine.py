@@ -10,6 +10,7 @@ from .certificates import upgrade_legacy_certificates
 from .app_certificate import validate_for_site
 from .worker_policy import worker_execution_policy
 from .directory import app_directory
+from .operation_history import journal_blocks_changes
 
 RESOURCES=Path(__file__).parent/'resources'
 
@@ -89,7 +90,7 @@ class Engine:
             from .workers import require_no_expansion
             require_no_expansion(self.dir)
             maintenance_path=self.dir/'maintenance-journal.json'
-            if mode not in ('check','status') and maintenance_path.exists() and json.loads(maintenance_path.read_text('utf-8')).get('status') in ('running','failed'):
+            if mode not in ('check','status') and maintenance_path.exists() and journal_blocks_changes('maintenance-journal.json',json.loads(maintenance_path.read_text('utf-8'))):
                 raise ValueError('Resume the interrupted backup/restore/reset operation before deploying')
             tls_journal=self.dir/'app-tls-journal.json'
             if mode in ('install','update','repair','healthcheck','ai') and tls_journal.exists() and json.loads(tls_journal.read_text('utf-8')).get('status') in ('running','failed'):

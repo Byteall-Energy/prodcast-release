@@ -38,6 +38,7 @@ def export_data(m):
     folder=m.STATE/'backups'/m.P['operation'];owned_path(folder,m.STATE);folder.mkdir(parents=True,exist_ok=True);folder.chmod(0o700)
     names=[]
     if m.P['role']=='db':
+        from restore_compatibility import database_info
         file=folder/'prodcast2.dump'
         command=['docker','compose','-p','prodcast-managed-db','-f',str(m.ROOT/'db/compose.json'),'exec','-T','--user','postgres','postgres']
         with file.open('wb') as dst:subprocess.run(command+['pg_dump','-Fc','-d','prodcast2'],stdout=dst,stderr=m.LOG,check=True)
@@ -45,7 +46,7 @@ def export_data(m):
         names=['prodcast2.dump']
     elif m.P['role']=='app':
         volume=json.loads(m.run(['docker','volume','inspect','prodcast-managed-media']))[0]['Mountpoint']
-        m.run(['tar','-czf',folder/'media.tar.gz','--exclude=./models_files','--exclude=./official_models','-C',volume,'.'])
+        m.run(['tar','-czf',folder/'media.tar.gz','--exclude=./models_files','--exclude=./official_models','--exclude=./.prodcast-restore','-C',volume,'.'])
         m.run(['tar','-czf',folder/'configuration.tar.gz','-C',m.old_target(),'app'])
         names=['media.tar.gz','configuration.tar.gz']
     else:raise RuntimeError('Data export is supported only on App and DB')
@@ -55,7 +56,9 @@ def export_data(m):
     for name in names:
         dst=stage/name;shutil.copyfile(folder/name,dst);dst.chmod(0o600);os.chown(dst,uid,gid)
         output[name]={'bytes':dst.stat().st_size,'sha256':m.digest(dst)}
-    return {'files':output,'server_backup':str(folder)}
+    result={'files':output,'server_backup':str(folder)}
+    if m.P['role']=='db':result['database']=database_info(m)
+    return result
 
 
 def validate_media(path,exclude_models=False):
@@ -64,6 +67,7 @@ def validate_media(path,exclude_models=False):
         for member in tar:
             name=PurePosixPath(member.name)
             if name.is_absolute() or '..' in name.parts or not (member.isfile() or member.isdir()):raise RuntimeError('Unsafe media backup entry')
+            if name.parts and name.parts[0]=='.prodcast-restore':raise RuntimeError('Reserved restore directory in media backup')
             if exclude_models and name.parts and name.parts[0] in MODEL_DIRECTORIES:raise RuntimeError('Model files are not part of this application-data backup')
             key=str(name)
             if key in seen:raise RuntimeError('Duplicate media backup entry')
@@ -78,16 +82,27 @@ def validate_restore(m):
     if name!=expected:raise RuntimeError('Unexpected restore file')
     path=Path(m.P['stage'])/name
     if path.stat().st_size!=spec['bytes'] or m.digest(path)!=spec['sha256']:raise RuntimeError('Restore file checksum mismatch')
-    if m.ST.get('manifest')!=m.P['restore_manifest']:raise RuntimeError('Install the exact backup release before restoring')
+    staged=m.P.get('restore_strategy')=='validated-forward-v1'
+    if staged:
+        from restore_compatibility import context,check_database
+        context(m)
+    elif m.ST.get('manifest')!=m.P['restore_manifest']:raise RuntimeError('Install the exact backup release before restoring')
     if m.P['role']=='db':
         cmd=['docker','compose','-p','prodcast-managed-db','-f',str(m.ROOT/'db/compose.json'),'exec','-T','--user','postgres','postgres','pg_restore','--list']
-        with path.open('rb') as src:subprocess.run(cmd,stdin=src,stdout=subprocess.DEVNULL,stderr=m.LOG,check=True)
+        with path.open('rb') as src:listing=subprocess.run(cmd,stdin=src,stdout=subprocess.PIPE,stderr=m.LOG,text=True,check=True).stdout
+        if staged:
+            check_database(m)
+            source=re.search(r'^;\s*Dumped from database version:\s*(\d+)',listing,re.M)
+            if not source or int(source[1])!=m.P['restore_database_major']:raise RuntimeError('Backup database version metadata does not match its dump')
     else:validate_media(path,exclude_models=scope==MEDIA_SCOPE)
     return {'validated':True}
 
 
 def restore_data(m):
     validate_restore(m)
+    if m.P.get('restore_strategy')=='validated-forward-v1':
+        from restore_compatibility import promote_database,promote_media
+        return promote_database(m) if m.P['role']=='db' else promote_media(m)
     path=Path(m.P['stage'])/m.P['restore_file']['name']
     if m.P['role']=='db':
         # App and Workers are stopped by the coordinator. No role passwords are overwritten.
@@ -100,7 +115,7 @@ def restore_data(m):
         volume=Path(info['Mountpoint']);owned_path(volume,volume)
         # A server-side safety copy has already been made before this point.
         for child in volume.iterdir():
-            if m.P.get('media_scope')==MEDIA_SCOPE and child.name in MODEL_DIRECTORIES:continue
+            if child.name=='.prodcast-restore' or m.P.get('media_scope')==MEDIA_SCOPE and child.name in MODEL_DIRECTORIES:continue
             if child.is_symlink() or child.is_file():child.unlink()
             elif child.is_dir():shutil.rmtree(child)
             else:raise RuntimeError('Unexpected media entry')
@@ -176,6 +191,10 @@ def dispatch(m):
             time.sleep(3)
         raise RuntimeError('App containers are not healthy after restart')
     if action=='data-export':return export_data(m)
+    if action in ('data-prepare','data-stage-media','data-migrate'):
+        from restore_compatibility import prepare_database,prepare_media,migrate_database
+        if (action=='data-prepare' and m.P['role']!='db') or (action!='data-prepare' and m.P['role']!='app'):raise RuntimeError('Invalid restore action target')
+        return {'data-prepare':prepare_database,'data-stage-media':prepare_media,'data-migrate':migrate_database}[action](m)
     if action=='data-validate':return validate_restore(m)
     if action=='data-restore':return restore_data(m)
     if action=='reset':return reset(m)

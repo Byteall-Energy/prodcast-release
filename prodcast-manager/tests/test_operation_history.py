@@ -1,7 +1,7 @@
 import json
 import threading
 import pytest
-from prodcast_manager.operation_history import OperationHistory, pending_operations, filtered_events
+from prodcast_manager.operation_history import OperationHistory, pending_operations, filtered_events,operation_summary,journal_blocks_changes
 from prodcast_manager.session_logs import SessionLog
 
 
@@ -55,6 +55,34 @@ def test_all_journal_families_and_unreadable_journal_are_visible(tmp_path):
     assert len(result) == 6
     assert result[-1]['status'] == 'unreadable'
     assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+
+
+@pytest.mark.parametrize('recovered,released,blocking',[(True,True,False),(False,True,True),(True,False,True),(None,None,True)])
+def test_failed_export_attention_is_separate_from_recovery_block(tmp_path,recovered,released,blocking):
+    value={'status':'failed','mode':'export','operation':'backup','quiesced':True,'previous_runtime':{'worker1':{'running':True}},'services_recovered':recovered,'leases_released':released}
+    path=tmp_path/'maintenance-journal.json';path.write_text(json.dumps(value));before=path.read_bytes()
+    summary=operation_summary(tmp_path)
+    assert summary['running']==0 and summary['needs_attention']==1 and summary['blocking']==int(blocking)
+    assert summary['entries'][0]['blocks_changes'] is blocking
+    assert journal_blocks_changes(path.name,value) is blocking
+    assert path.read_bytes()==before
+
+
+def test_running_means_active_session_not_a_stale_running_journal(tmp_path):
+    (tmp_path/'journal.json').write_text(json.dumps({'status':'running','mode':'update','operation':'stale'}))
+    summary=operation_summary(tmp_path)
+    assert summary['running']==0 and summary['needs_attention']==1 and summary['blocking']==1
+    summary=operation_summary(tmp_path,{'mode':'update','id':'current-session'})
+    assert summary['running']==1 and summary['needs_attention']==0 and summary['blocking']==1
+    assert len(summary['entries'])==1
+
+
+def test_read_only_active_action_has_a_live_entry_and_completed_journals_disappear(tmp_path):
+    (tmp_path/'maintenance-journal.json').write_text(json.dumps({'status':'complete','mode':'export'}))
+    assert operation_summary(tmp_path)['entries']==[]
+    summary=operation_summary(tmp_path,{'mode':'status','id':'live'})
+    assert summary['running']==1 and summary['needs_attention']==0
+    assert summary['entries'][0]['state']=='running'
 
 
 def test_concurrent_append_has_complete_events(tmp_path):

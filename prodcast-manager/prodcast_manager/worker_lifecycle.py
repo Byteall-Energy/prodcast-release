@@ -5,6 +5,7 @@ from pathlib import Path
 from .config import atomic_json, file_lock, topology_hash, validate_membership, worker_addresses, worker_roles
 from .portable import runtime_config, save_config
 from .workers import binding, read_json
+from .operation_history import journal_blocks_changes
 
 
 def prune_removed_receipt(vault,role):
@@ -39,7 +40,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
     with file_lock(directory / 'operation.lock'):
         for name in ('journal.json', 'ai-journal.json', 'maintenance-journal.json',
                      'app-tls-journal.json', 'workers-journal.json'):
-            if read_json(directory / name).get('status') in ('running', 'failed'):
+            if journal_blocks_changes(name,read_json(directory / name)):
                 raise ValueError('Complete or stop the pending operation first: ' + name)
         current = runtime_config(directory / 'site.json')
         journal = read_json(path)
