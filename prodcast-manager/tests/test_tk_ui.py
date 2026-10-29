@@ -61,6 +61,22 @@ def test_server_backup_success_shows_server_paths(window):
     window.text_dialog.assert_not_called()
 
 
+def test_overview_distinguishes_attention_and_blocking_and_updates_live(window):
+    from prodcast_manager.config import atomic_json
+    path=window.controller.directory/'maintenance-journal.json'
+    atomic_json(path,{'mode':'export','status':'failed','operation':'failed-backup','services_recovered':True,'leases_released':True})
+    window.refresh();window.navigate('overview')
+    assert window.operation_counts['running'].cget('text')=='0'
+    assert window.operation_counts['needs_attention'].cget('text')=='1'
+    assert window.operation_counts['blocking'].cget('text')=='0'
+    assert 'Does not block' in window.operation_state_tree.item('0','values')[2] or 'Не блокирует' in window.operation_state_tree.item('0','values')[2]
+    atomic_json(path,{'mode':'export','status':'failed','operation':'failed-backup','services_recovered':False,'leases_released':True,'quiesced':True})
+    window.poll()
+    assert window.operation_counts['blocking'].cget('text')=='1'
+    window.navigate('operations');window.inspect_operation_state()
+    assert 'maintenance-journal.json' in window.text_dialog.call_args.args[1]
+
+
 def test_preview_sections_and_settings_without_qt(window):
     for key,_,_ in window.sections:window.navigate(key)
     for key in ('general','https','directory','activation'):

@@ -5,7 +5,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from prodcast_manager.tk_ui import smoke_test
 
 
-def capture_preview(destination):
+def capture_preview(destination,scenario=None):
     """Capture only this test's own Tk HWND, never the desktop or other apps."""
     import ctypes as c
     import tempfile
@@ -33,7 +33,16 @@ def capture_preview(destination):
     g.GetDIBits.argtypes=[w.HDC,w.HBITMAP,w.UINT,w.UINT,c.c_void_p,c.c_void_p,w.UINT]
     with tempfile.TemporaryDirectory(prefix='manager-tk-preview-') as folder:
         gc.collect()
-        root=tk.Tk();window=DesktopWindow(root,DesktopController(Path(folder)));window.navigate('servers')
+        controller=DesktopController(Path(folder))
+        if scenario:
+            from prodcast_manager.config import atomic_json
+            controller.language_set({'language':'en'})
+            if scenario=='attention':
+                atomic_json(controller.directory/'maintenance-journal.json',{'mode':'export','status':'failed','operation':'preview-backup','services_recovered':True,'leases_released':True})
+            elif scenario=='blocking':
+                atomic_json(controller.directory/'maintenance-journal.json',{'mode':'export','status':'failed','operation':'preview-backup','quiesced':True,'services_recovered':False,'leases_released':True})
+            else:raise ValueError('Unknown preview scenario')
+        root=tk.Tk();window=DesktopWindow(root,controller);window.navigate('overview' if scenario else 'servers')
         root.update();hwnd=u.GetAncestor(root.winfo_id(),2);rect=w.RECT();u.GetWindowRect(hwnd,c.byref(rect))
         width,height=rect.right-rect.left,rect.bottom-rect.top
         dc=u.GetWindowDC(hwnd);memory=g.CreateCompatibleDC(dc);bitmap=g.CreateCompatibleBitmap(dc,width,height)
@@ -62,7 +71,7 @@ def verify_archive(names):
 
 if __name__=='__main__':
     smoke_test()
-    if '--capture' in sys.argv:capture_preview(sys.argv[sys.argv.index('--capture')+1])
+    if '--capture' in sys.argv:capture_preview(sys.argv[sys.argv.index('--capture')+1],sys.argv[sys.argv.index('--scenario')+1] if '--scenario' in sys.argv else None)
     if '--verify-exe' in sys.argv:
         from PyInstaller.archive.readers import CArchiveReader
         verify_archive(CArchiveReader(sys.argv[sys.argv.index('--verify-exe')+1]).toc)

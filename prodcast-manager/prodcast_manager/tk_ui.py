@@ -293,6 +293,7 @@ class DesktopWindow:
         try:
             old=self.state['busy'];self.state=self.controller.snapshot();result=self.state['result']
             if self.page=='operations':self.update_logs()
+            if self.page in ('overview','operations'):self.update_operation_state()
             self.refresh_context()
             if not self.state['busy'] and (old or (result and result['operation']!=self.result_seen)):
                 self.refresh()
@@ -335,8 +336,9 @@ class DesktopWindow:
 
     def build_overview(self):
         form=self.group('Current site','Текущая площадка')
-        for en,ru,value in [('Profile','Профиль',self.state['profile_path']),('Deployment','Установка',self.t('Installed','Установлено') if self.state['installed'] else self.t('Not confirmed locally','Локально не подтверждена')),('Pending operations','Незавершённые операции',len(self.state['pending']))]:
+        for en,ru,value in [('Profile','Профиль',self.state['profile_path']),('Deployment','Установка',self.t('Installed','Установлено') if self.state['installed'] else self.t('Not confirmed locally','Локально не подтверждена'))]:
             form.addRow(self.t(en,ru),self.label(value))
+        self.build_operation_state()
         self.note('Local history does not prove server health. Run a status check for current server state.','Локальная история не подтверждает состояние VM. Запустите проверку состояния серверов.')
         self.button(self.content,'Configure servers','Настроить серверы',lambda:self.navigate('servers'),True,False)
         self.button(self.content,'Check remote status','Проверить состояние VM',lambda:self.run('status'))
@@ -515,7 +517,73 @@ class DesktopWindow:
         self.button(form,'Test user','Проверить пользователя',lambda:self.probe('user'))
         self.button(self.content,'Save for next deployment','Сохранить для следующего развёртывания',self.save_directory,True)
 
+    def operation_name(self,item):
+        mode=item.get('mode') or {'journal.json':'deployment','ai-journal.json':'ai','workers-journal.json':'add-workers','worker-action-journal.json':'worker-action','app-tls-journal.json':'app-tls','maintenance-journal.json':'maintenance'}.get(item.get('journal'),'operation')
+        names={'export':('Backup export','Экспорт бэкапа'),'restore':('Data restore','Восстановление данных'),'update':('Stack update','Обновление стека'),'install':('Installation','Установка'),'ai':('AI operation','Операция AI'),'add-workers':('Add Workers','Добавление Workers'),'worker-repair':('Worker repair','Ремонт Worker'),'worker-remove':('Worker removal','Удаление Worker'),'app-tls':('App certificate','Сертификат App')}
+        return self.t(*names[mode]) if mode in names else mode.replace('-',' ').capitalize()
+
+    def build_operation_state(self):
+        form=self.group('Operation status','Состояние операций')
+        self.operation_counts={}
+        for key,en,ru in [('running','Running','Выполняются'),('needs_attention','Needs attention','Требуют внимания'),('blocking','Blocks other operations','Блокируют другие операции')]:
+            self.operation_counts[key]=ttk.Label(form,text='0',font=('Segoe UI',14,'bold'),style='Card.TLabel');form.addRow(self.t(en,ru),self.operation_counts[key])
+        self.operation_state_tree=ttk.Treeview(form,columns=('operation','state','impact'),show='headings',height=3,selectmode='browse')
+        for key,en,ru,width in [('operation','Operation','Операция',170),('state','State','Состояние',150),('impact','Effect on other operations','Влияние на другие операции',275)]:
+            self.operation_state_tree.heading(key,text=self.t(en,ru));self.operation_state_tree.column(key,width=width,stretch=True)
+        self.operation_state_tree.tag_configure('attention',foreground='#946300')
+        self.operation_state_tree.tag_configure('blocking',foreground='#b42318')
+        form.addRow(self.operation_state_tree)
+        self.operation_reason_label=ttk.Label(form,text='',style='Card.TLabel',wraplength=760)
+        form.addRow(self.operation_reason_label)
+        self.operation_state_tree.bind('<<TreeviewSelect>>',lambda e:self.show_operation_reason())
+        self.operation_state_signature=None
+        self.update_operation_state()
+
+    def update_operation_state(self):
+        summary=self.state['operation_summary']
+        colors={'running':BLUE,'needs_attention':'#946300','blocking':'#b42318'}
+        for key,widget in self.operation_counts.items():widget.configure(text=str(summary[key]),foreground=colors[key] if summary[key] else MUTED)
+        signature=json.dumps(summary['entries'],sort_keys=True)
+        if signature==self.operation_state_signature:return
+        self.operation_state_signature=signature
+        selected=self.operation_state_tree.selection()
+        self.operation_state_entries=summary['entries']
+        self.operation_state_tree.delete(*self.operation_state_tree.get_children())
+        for n,item in enumerate(self.operation_state_entries):
+            state=self.t('Running','Выполняется') if item['state']=='running' else self.t('Needs attention','Требует внимания')
+            impact=self.t('Blocks conflicting changes','Блокирует конфликтующие изменения') if item['blocks_changes'] else self.t('Does not block other changes','Не блокирует другие изменения')
+            self.operation_state_tree.insert('','end',iid=str(n),values=(self.operation_name(item),state,impact),tags=('blocking' if item['blocks_changes'] else 'attention',))
+        if self.operation_state_entries:
+            key=selected[0] if selected and int(selected[0])<len(self.operation_state_entries) else '0'
+            self.operation_state_tree.selection_set(key)
+        self.show_operation_reason()
+
+    def show_operation_reason(self):
+        selected=self.operation_state_tree.selection()
+        if selected:
+            item=self.operation_state_entries[int(selected[0])]
+            self.operation_reason_label.configure(text=self.operation_reason(item))
+        else:self.operation_reason_label.configure(text=self.t('No running operations or unresolved recovery journals.','Нет выполняемых операций или незавершённого восстановления.'))
+
+    def operation_reason(self,item):
+        ru={'export_recovered':'Экспорт бэкапа завершился ошибкой. Службы восстановлены, блокировки серверов сняты. Повторите экспорт при необходимости; другие изменения разрешены.',
+            'unreadable':'Журнал восстановления не читается. Восстановите или проверьте его перед конфликтующими изменениями.',
+            'recovery_unconfirmed':'Восстановление служб или снятие блокировок серверов не подтверждено. Повторите экспорт перед конфликтующими изменениями.',
+            'incomplete_changes':'Службы могут оставаться приостановленными, а серверы — заблокированными. Продолжите исходную операцию либо используйте поддерживаемое действие остановки/восстановления.',
+            'active':'В этом Manager выполняется операция. Дождитесь её завершения перед запуском других изменений.'}
+        return self.t(item['blocking_reason'],ru.get(item.get('reason_code'),item['blocking_reason']))
+
+    def inspect_operation_state(self):
+        entries=self.controller.snapshot()['operation_summary']['entries']
+        lines=[]
+        for item in entries:
+            state=self.t('Running','Выполняется') if item['state']=='running' else self.t('Needs attention','Требует внимания')
+            lines.append(self.operation_name(item)+' — '+state)
+            lines.extend([self.operation_reason(item),self.t('Journal: ','Журнал: ')+(item['journal'] or self.t('Current session','Текущий сеанс')),''])
+        self.text_dialog(self.t('Operation status','Состояние операций'),'\n'.join(lines) or self.t('No running or unresolved operations.','Нет выполняемых или незавершённых операций.'))
+
     def build_operations(self):
+        self.build_operation_state()
         form=self.group('History and diagnostics','История и диагностика')
         self.history_ids=[x['id'] for x in self.state['history']]
         self.history_names=[x.get('mode','')+' · '+x['id'] for x in self.state['history']]
@@ -535,7 +603,7 @@ class DesktopWindow:
         self.button(self.content,'Copy displayed log','Копировать отображаемый журнал',lambda:self.copy(self.log_view.get('1.0','end-1c')),mutable=False)
         self.button(self.content,'Open logs folder','Открыть папку журналов',self.open_logs,mutable=False)
         self.button(self.content,'Inspect older session log…','Открыть журнал прежнего сеанса…',self.legacy_log,mutable=False)
-        self.button(self.content,'Inspect pending operations','Незавершённые операции',lambda:self.text_dialog(self.t('Recovery','Восстановление'),json.dumps(self.controller.snapshot()['pending'],ensure_ascii=False,indent=2)),mutable=False)
+        self.button(self.content,'Inspect operation status','Состояние операций',self.inspect_operation_state,mutable=False)
         self.button(self.content,'Stop previous core / AI operation…','Остановить предыдущую основную / AI операцию…',self.stop_previous)
         self.note('Stop releases supported core/AI owners; it is not database rollback. Other journals retain their supported resume actions.','Остановка освобождает владельцев основной/AI операции; это не откат БД. Для остальных журналов используйте исходные операции.')
         self.update_logs()
@@ -709,6 +777,7 @@ class DesktopWindow:
     def build_backups(self):
         self.note('A server backup is not a portable encrypted archive. Restore replaces data; reset is not a database rollback. Keep the original profile and logs.','Бэкап на сервере — не переносимый зашифрованный архив. Восстановление заменяет данные; сброс не является откатом БД. Сохраняйте исходный профиль и журналы.')
         self.note('Backups keep the database, workflow files and uploaded data sources. Worker installations and model files (models_files/, official_models/) are excluded. Back up models separately or import them again from SMB. New archives preserve existing model directories during restore and require this Manager version or newer.','Бэкапы сохраняют базу данных, файлы workflows и загруженные источники данных. Установки Workers и файлы моделей (models_files/, official_models/) исключены. Сохраняйте модели отдельно или импортируйте их из SMB. При восстановлении новых архивов существующие папки моделей сохраняются; требуется эта или более новая версия Manager.')
+        self.note('Older backups can restore into a newer App after compatibility checks and forward migrations. PostgreSQL major versions must match. Restore needs extra disk space and retains the previous database and App files for recovery.','Старые бэкапы можно восстановить в новую App после проверки совместимости и миграций. Основная версия PostgreSQL должна совпадать. Нужен запас места: предыдущая БД и файлы App сохраняются для восстановления.')
         form=self.group('Portable archive','Переносимый архив')
         self.edit(form,'Archive path','Путь архива',self.maintenance,'path',browse='backup')
         self.button(form,'Choose export destination…','Выбрать путь экспорта…',self.export_path)

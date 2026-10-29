@@ -15,7 +15,7 @@ from . import __version__
 from .config import validate, atomic_json, worker_roles, topology_hash, fresh_site
 from .engine import Engine
 from .i18n import set_language
-from .operation_history import OperationHistory, pending_operations, filtered_events
+from .operation_history import OperationHistory, pending_operations, operation_summary, filtered_events
 from .portable import (data_directory, last_directory, runtime_config, save_config,
                        open_credentials, profile_directory, remember, import_site)
 from .release import Release
@@ -102,6 +102,7 @@ class DesktopController:
                         directory=public_directory, activation=activation,
                         certificate=dict(info=tls['info'],url=tls['url']) if tls else None,
                         installation_id=vault.get('installation_id'), pending=pending_operations(self.directory),
+                        operation_summary=operation_summary(self.directory,self.active if self.busy else None),
                         history=self.history.list(self.directory), result=copy.deepcopy(self.last_result),
                         applied=applied, receipt=receipt, log_path=str(self.log.directory))
 
