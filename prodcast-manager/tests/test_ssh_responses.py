@@ -19,7 +19,7 @@ def test_probe_ignores_nonprotocol_stdout(noise):
 
 @pytest.mark.parametrize('data',['','\n','Welcome\n','#< CLIXML\n<Objs/>',PROBE_MARKER+'not-base64',reply()+ '\n'+reply(),PROBE_MARKER+base64.b64encode(b'not JSON').decode(),reply({'hostname':'worker1','os':'Windows','free':None}),reply({'hostname':'worker1','os':'Windows','free':True}),reply({'hostname':'worker1','os':'Windows','free':-1})])
 def test_bad_probe_is_a_named_error_not_json_traceback(data):
-    with pytest.raises(RuntimeError,match='worker1: проверка ОС и прав') as caught:parse_probe_output(data,'worker1')
+    with pytest.raises(RuntimeError,match='worker1: OS and permissions check') as caught:parse_probe_output(data,'worker1')
     assert 'Expecting value' not in str(caught.value)
 
 class Channel:
@@ -52,13 +52,14 @@ def test_shell_banner_is_tolerated_in_actual_probe_path():
 
 
 def test_progress_is_streamed_across_chunks_without_exposing_remote_text():
-    channel=Channel(b'',b'MANAGER_PROGRESS:ai-driver\nprivate stderr')
-    channel.out=[b'private stdout\nMANAGER_PRO',b'GRESS:ai-driver\r',b'\nMANAGER_PROGRESS:secret-token\n',
+    channel=Channel(b'',b'MANAGER_PROGRESS:ai-images\nprivate stderr')
+    channel.out=[b'private stdout\nMANAGER_PRO',b'GRESS:ai-images\r',b'\nMANAGER_PROGRESS:secret-token\nMANAGER_PROGRESS:ai-driver\nMANAGER_PROGRESS:ai-driver-ready\n',
                  b'x'*900+b'MANAGER_PROGRESS:ai-generation\n',b'MANAGER_PROGRESS:ai-generation\nMANAGER_RESULT:{}\n']
     obj=remote(channel);messages=[];obj.log=messages.append
     output=obj.command('test')
     assert len(messages)==2
-    assert 'NVIDIA' in messages[0] and 'генерации' in messages[1]
+    assert 'loading AI containers' in messages[0] and 'checking response generation' in messages[1]
+    assert not any('driver' in message.lower() for message in messages)
     assert not any('private' in x or 'secret' in x for x in messages)
     assert 'MANAGER_RESULT:{}' in output
 

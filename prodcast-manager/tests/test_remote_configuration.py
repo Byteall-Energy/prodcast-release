@@ -48,7 +48,7 @@ def test_db_writer_emits_tls_only_scoped_access(agent,monkeypatch):
     assert not any('DROP' in t for _,t in sql)
 
 
-def test_fresh_install_process_cannot_wait_for_debconf_or_mok(agent,monkeypatch):
+def test_package_commands_remain_noninteractive_in_fresh_process(agent,monkeypatch):
     # Regression: bootstrap ran in a different SSH process and its env was lost.
     for name in ('DEBIAN_FRONTEND','APT_LISTCHANGES_FRONTEND','NEEDRESTART_MODE'):
         monkeypatch.delenv(name,raising=False)
@@ -57,7 +57,7 @@ def test_fresh_install_process_cannot_wait_for_debconf_or_mok(agent,monkeypatch)
         calls.append((args,kwargs))
         return types.SimpleNamespace(stdout='ok',stderr='',returncode=0)
     monkeypatch.setattr(agent.subprocess,'run',execute)
-    for command in (['apt-get','install','-y','nvidia-driver-595-server'],['ubuntu-drivers','install','--gpgpu']):
+    for command in (['apt-get','install','-y','docker-ce'],['dnf','install','-y','docker-ce']):
         assert agent.run(command)=='ok'
     for command,options in calls:
         assert options['env']['DEBIAN_FRONTEND']=='noninteractive'

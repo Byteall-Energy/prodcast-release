@@ -28,17 +28,17 @@ def test_tcp_timeout_reports_endpoint_before_auth(monkeypatch):
     monkeypatch.setattr(socket,'create_connection',lambda *a,**k:(_ for _ in ()).throw(TimeoutError()))
     with pytest.raises(ScanError) as caught:scan({'address':'10.20.30.23','port':2222})
     assert caught.value.stage=='tcp'
-    assert '10.20.30.23:2222' in str(caught.value) and 'Пароль' in str(caught.value)
+    assert '10.20.30.23:2222' in str(caught.value) and 'No password or SSH key' in str(caught.value)
 
 def test_example_address_rejected_before_network(monkeypatch):
     def no_network(*a,**kw):raise AssertionError('Example address must not be contacted')
     monkeypatch.setattr(socket,'create_connection',no_network)
-    with pytest.raises(ScanError,match='демонстрационный') as caught:scan({'address':'192.0.2.23','port':22})
+    with pytest.raises(ScanError,match='template address') as caught:scan({'address':'192.0.2.23','port':22})
     assert caught.value.stage=='configuration'
 
 def test_refused_port_has_separate_message(monkeypatch):
     monkeypatch.setattr(socket,'create_connection',lambda *a,**k:(_ for _ in ()).throw(ConnectionRefusedError()))
-    with pytest.raises(ScanError,match='соединение отклонено'):scan({'address':'127.0.0.1','port':22})
+    with pytest.raises(ScanError,match='connection refused'):scan({'address':'127.0.0.1','port':22})
 
 def test_open_tcp_without_banner_is_not_reported_as_closed_port():
     with listener(lambda conn,stop:stop.wait(3)) as host:
@@ -64,7 +64,7 @@ def test_real_loopback_ssh_fingerprint_without_authentication():
         finally:transport.close()
     with listener(serve) as host:result=scan(host,progress.append,banner_timeout=2,handshake_timeout=2)
     assert result==fingerprint(key) and attempts==[]
-    assert any('TCP доступен' in s for s in progress)
+    assert any('TCP connected' in s for s in progress)
 
 def test_scan_cancel_closes_connection():
     cancel=threading.Event()

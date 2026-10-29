@@ -76,8 +76,6 @@ def ps(code):
 PROBE_MARKER='MANAGER_PROBE_V1:'
 
 PROGRESS_MESSAGES={
-    'ai-driver':tr('установка NVIDIA-драйвера и сборка модулей ядра'),
-    'ai-driver-ready':tr('драйвер установлен; для GPU могут потребоваться перезагрузка и регистрация ключа Secure Boot; продолжаем с доступными ресурсами'),
     'ai-images':tr('загрузка контейнеров AI из релиза'),
     'ai-runtime-download':tr('скачивание Ollama; длительность зависит от скорости сети'),
     'ai-model-download':tr('скачивание модели Ollama'),
