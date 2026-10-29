@@ -16,11 +16,12 @@ def dispatch(a):
     if st.get('operation') not in (None,'',operation):raise RuntimeError('Another deployment owns the DB')
     if not re.fullmatch('[a-f0-9]{32}',operation):raise RuntimeError('Invalid operation ID')
     if st.get('version')!=p['version'] or st.get('manifest')!=p['manifest']:
-        raise RuntimeError('Worker expansion requires the exact installed release')
+        raise RuntimeError('Worker expansion DB identity differs from its bound component deployment record')
     new=spec['new_workers']; previous=spec['previous_workers']
     if (not new or len(set(new))!=len(new) or any(r in previous or not re.fullmatch(r'worker([1-9]|1[0-6])',r) for r in new)):
         raise RuntimeError('New Workers must use distinct unused IDs from 1 to 16')
     if len(previous)+len(new)>16:raise RuntimeError('Too many Workers')
+    if set(a.worker_roles())!=set(previous)|set(new):raise RuntimeError('Worker expansion request does not match the configured roster')
     for role in new:ipaddress.IPv4Address(a.C['hosts'][role]['address'])
     transaction=a.STATE/'workers-transaction.json'
     receipt=json.loads(transaction.read_text()) if transaction.exists() else {}
@@ -28,6 +29,9 @@ def dispatch(a):
         raise RuntimeError('Resume the existing Worker expansion')
     if receipt.get('operation')==operation and receipt.get('target')!=spec['target']:
         raise RuntimeError('Worker expansion target changed')
+    if p['action']=='workers-cancel':return cancel(a,receipt,transaction)
+    if receipt.get('cancelling') or receipt.get('cancelled'):
+        raise RuntimeError('Worker expansion cancellation must be completed before installing Workers')
     reactivated=spec.get('reactivated_workers',{})
     if any(role not in new for role in reactivated):raise RuntimeError('Invalid reactivated Worker roster')
     if receipt.get('operation')==operation:
@@ -125,3 +129,51 @@ def replace(a,path,text):
     label=os.getxattr(path,'security.selinux') if a.selinux_enabled() else None
     a.write(path,text,stat.S_IMODE(info.st_mode));os.chown(path,info.st_uid,info.st_gid)
     if label is not None:os.setxattr(path,'security.selinux',label)
+
+
+def cancel(a,receipt,path):
+    """Revoke only access created/reactivated by this exact expansion."""
+    spec=a.P['worker_expansion'];operation=a.P['operation'];new=spec['new_workers'];previous=spec['previous_workers']
+    if receipt.get('operation')!=operation:
+        if a.ST.get('maintenance')==operation:raise RuntimeError('Owned Worker expansion receipt is missing; cannot infer cancellation scope')
+        return {'cancelled':True,'transaction_found':False}
+    if receipt.get('cancelled'):return {'cancelled':True,'transaction_found':True}
+    roster=a.ST.get('worker_hosts',previous)
+    target={r:a.C['hosts'][r]['address'] for r in previous.keys()|set(new)}
+    if roster not in (previous,target):raise RuntimeError('DB Worker membership changed outside this expansion')
+    receipt['cancelling']=True;a.write(path,json.dumps(receipt));a.ST['maintenance']=operation;a.save()
+    names=['prodcast_worker_'+f'{int(r[6:]):02}' for r in new]
+    for name in names:
+        if a.psql("SELECT 1 FROM pg_roles WHERE rolname='"+name+"';").strip():
+            a.psql('ALTER ROLE '+name+' NOLOGIN;')
+            a.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='"+name+"';")
+    folder=a.ROOT/'db/config';hba=folder/'pg_hba.conf';acl=folder/'users.acl'
+    replace(a,hba,''.join(line for line in hba.read_text().splitlines(True) if not set(line.split()).intersection(names)))
+    replace(a,acl,''.join(line for line in acl.read_text().splitlines(True) if not any(line.startswith('user '+name+'_scheduler ') for name in names)))
+    if a.psql('SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;').strip()!='0':raise RuntimeError('PostgreSQL cancellation access configuration is invalid')
+    if a.psql('SELECT pg_reload_conf();').strip()!='t':raise RuntimeError('PostgreSQL reload failed during cancellation')
+    def redis(*args):
+        return a.dc('db','exec','-T','redis','sh','-c',
+            'read -r REDISCLI_AUTH; export REDISCLI_AUTH; exec redis-cli --tls --cacert /etc/prodcast-certs/ca.crt -h 127.0.0.1 -p 6380 --user db_admin "$@"',
+            'redis-admin',*args,input=a.S['REDIS_ADMIN']+'\n')
+    if redis('ACL','LOAD').strip()!='OK':raise RuntimeError('Redis cancellation ACL reload failed')
+    for name in names:redis('CLIENT','KILL','USER',name+'_scheduler','SKIPME','yes')
+    if a.firewalld_active():
+        old_hosts=a.C['hosts'];a.C['hosts']={r:h for r,h in old_hosts.items() if r not in new}
+        try:a.firewalld_rules('db')
+        finally:a.C['hosts']=old_hosts
+    else:
+        script=a.STATE/'firewall.sh';text=script.read_text()
+        for role in new:
+            address=a.C['hosts'][role]['address']+'/32'
+            text=text.replace('iptables -A PCMAN-DB -s '+address+' -j ACCEPT\n','')
+            rule=['PCMAN-DB','-s',address,'-j','ACCEPT']
+            try:a.run(['iptables','-C',*rule])
+            except RuntimeError:continue
+            a.run(['iptables','-D',*rule])
+        a.write(script,text,0o700)
+    a.ST['worker_hosts']=previous
+    for role in new:a.ST.setdefault('retired_workers',{})[role]={'operation':operation,'address':a.C['hosts'][role]['address']}
+    a.ST['maintenance']='';a.save()
+    receipt.update(cancelled=True,complete=True);a.write(path,json.dumps(receipt))
+    return {'cancelled':True,'transaction_found':True,'retired_workers':new,'original_workers_preserved':True}

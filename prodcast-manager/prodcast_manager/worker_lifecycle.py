@@ -32,6 +32,7 @@ def removal_target(config, role):
 def run_worker_action(directory, role, mode, vault, release=None, log=print,
                       remote_factory=None, diagnostics=None, selected_queues=None):
     from .engine import Engine, RESOURCES
+    from .component_updates import recorded_components,verify_component,refresh_membership_receipts,fingerprint_details,bind_component
     if mode not in ('worker-repair', 'worker-remove'):
         raise ValueError('Unknown Worker action')
     directory = Path(directory)
@@ -45,6 +46,10 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
         current = runtime_config(directory / 'site.json')
         journal = read_json(path)
         pending = journal.get('status') in ('running', 'failed')
+        if (journal.get('status')=='failed' and journal.get('phase')=='preflight'
+                and not journal.get('steps') and not journal.get('inflight')):
+            atomic_json(directory/'history'/('worker-action-preflight-'+journal['operation']+'.json'),journal)
+            pending=False
         if pending:
             signed=vault.data.get('worker_action',{})
             if (signed.get('operation')!=journal.get('operation') or signed.get('original')!=binding(journal['original'])
@@ -70,7 +75,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
             target = removal_target(current, role) if mode == 'worker-remove' else copy.deepcopy(current)
             journal = dict(operation=uuid.uuid4().hex, role=role, mode=mode,
                            installation_id=vault.data['installation_id'], original=current,
-                           target=target, steps=[], status='running')
+                           target=target, steps=[], status='running',phase='preflight')
         if mode == 'worker-repair' and selected_queues is not None:
             from .worker_queues import execution_queues
             queues=execution_queues({'execution_queues':selected_queues})
@@ -85,7 +90,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
             journal['manifest'] = release.digest
         if mode == 'worker-repair':
             from .worker_queues import validate_release_queues
-            validate_release_queues(journal['target'],release)
+            validate_release_queues({'hosts':{role:journal['target']['hosts'][role]}},release)
         # Back up encrypted local metadata before the first remote mutation.
         if not pending:
             import shutil
@@ -101,12 +106,19 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
         atomic_json(path, journal)
         options = {'remote_factory': remote_factory} if remote_factory else {}
         engine = Engine(current, vault, release, directory, log, diagnostics=diagnostics, **options)
-        engine.c = journal['target'] if mode == 'worker-repair' else journal['original']
+        engine.c = journal['original']
+        if journal.get('phase')=='committing':engine.c=journal['target']
+        records=recorded_components(engine)
+        engine.c=journal['target'] if mode=='worker-repair' else journal['original']
+        versions=journal.get('component_versions') or {r:{k:v[k] for k in ('version','manifest')} for r,v in records.items()}
+        sealed_versions=vault.data.get('worker_action',{}).get('component_versions')
+        if sealed_versions and versions!=sealed_versions:raise ValueError('Worker action component deployment records changed')
         operation = journal['operation']
         selected = ('app', role) if mode == 'worker-repair' else ('app', 'db', role)
 
         def action(host, name, **extra):
-            payload = engine.payload(host, operation, mode)
+            payload = engine.payload(host, operation, mode,include_files=mode=='worker-repair' and host==role)
+            if host in versions:bind_component(payload,dict(records.get(host,{}),**versions[host]))
             payload['worker_action'] = {'role': role, 'target': journal['target'],
                                         'previous_workers': worker_addresses(journal['original'])}
             payload.update(extra)
@@ -117,8 +129,11 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
             key = host + ':' + name
             if key in journal['steps']:
                 return
+            if journal.get('phase')!='committing':journal['phase']='applying'
+            journal['inflight']={'role':host,'action':name};atomic_json(path,journal)
             result = action(host, name, **extra)
             journal['steps'].append(key)
+            journal.pop('inflight',None)
             atomic_json(path, journal)
             return result
 
@@ -136,8 +151,15 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
                 if (not status.get('managed') or status.get('operation') not in ('', None, operation)
                         or status.get('maintenance') not in ('', None, operation)):
                     raise ValueError(host + ': complete the previous operation before this Worker action')
+                versions[host]=verify_component(host,status,versions.get(host),operation)
                 if mode == 'worker-repair' and host == role and (status.get('version') != release.version or status.get('manifest') != release.digest):
-                    raise ValueError('Select the exact release installed on ' + role)
+                    installed_files=records.get(role,{}).get('files')
+                    details=fingerprint_details(engine,role)
+                    if (not installed_files or installed_files!=details['files']
+                            or records[role].get('worker_execution_policy')!=details.get('worker_execution_policy')):
+                        raise ValueError('Select the exact release installed on ' + role+' or a verified release with identical Worker files')
+            journal['component_versions']=versions;atomic_json(path,journal)
+            vault.data['worker_action']['component_versions']=copy.deepcopy(versions);vault.save()
             for host in selected:
                 step(host, 'maintenance-claim')
             if 'app_runtime' not in journal:
@@ -159,8 +181,10 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
                 step(role, 'commit')
                 save_config(directory, journal['target'])
                 if vault.data.get('deployment_components'):
-                    from .component_updates import save_receipt
-                    save_receipt(engine,[role],vault.data['deployment_components']['roles'])
+                    from .component_updates import receipt
+                    record=receipt(engine,[role],vault.data['deployment_components']['roles'])
+                    record['roles'][role].update(versions[role])
+                    vault.data['deployment_components']=record;vault.save()
             else:
                 step('db', 'worker-retire-access')
                 step(role, 'worker-retire')
@@ -173,6 +197,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
                 prune_removed_receipt(vault,role)
                 vault.save()
                 save_config(directory, journal['target'])
+                engine.c=journal['target'];refresh_membership_receipts(engine);engine.c=journal['original']
             step('app', 'maintenance-resume', previous_runtime=journal['app_runtime'])
             action('app', 'maintenance-health', previous_runtime=journal['app_runtime'])
             for host in selected:

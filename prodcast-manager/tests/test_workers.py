@@ -30,6 +30,8 @@ def expansion(tmp_path):
             if action=='commit':state.update(operation='',version=p['version'],manifest=p['manifest'])
             if action=='workers-prepare':state['maintenance']=p['operation']
             if action=='workers-commit':state['maintenance']=''
+            if action=='cancel-worker-addition':state.update(operation='',retired=True,retirement_operation=p['operation'])
+            if action=='workers-cancel':state.update(maintenance='',worker_hosts=p['worker_expansion']['previous_workers'])
             return {'healthy':True}
     return c,proposed,v,Release(),Remote
 
@@ -124,8 +126,145 @@ def test_interrupted_local_commit_recovers_both_files(tmp_path,expansion,monkeyp
 
 def test_installed_core_manifest_mismatch_is_read_only(tmp_path,expansion):
     c,target,v,release,remote=expansion;remote.states['app']['manifest']='different'
-    with pytest.raises(ValueError,match='exact installed release'):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    with pytest.raises(ValueError,match='component deployment record'):add_workers(tmp_path,target,v,release,remote_factory=remote)
     assert all(action=='preflight' for role,action in remote.calls)
+
+
+def mixed_expansion(tmp_path,expansion):
+    from prodcast_manager.engine import Engine
+    from prodcast_manager.component_updates import receipt
+    c,target,v,release,remote=expansion
+    e=Engine(c,v,release,tmp_path,remote_factory=remote)
+    v.data['deployment_components']=receipt(e)
+    remote.states['db'].update(version='v0.2',manifest='older-db')
+    v.data['deployment_components']['roles']['db'].update(version='v0.2',manifest='older-db')
+    v.save()
+    return e,c,target,v,release,remote
+
+
+def test_add_worker_on_mixed_versions_binds_db_and_preserves_receipts(tmp_path,expansion):
+    from prodcast_manager.component_updates import changed_roles
+    from prodcast_manager.engine import Engine
+    from prodcast_manager.maintenance import installed_releases
+    e,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    seen=[]
+    class Capture(remote):
+        def action(self,p,action,resources):
+            seen.append((self.role,action,copy.deepcopy(p)))
+            return super().action(p,action,resources)
+    result=add_workers(tmp_path,target,v,release,remote_factory=Capture)
+    assert all(p['manifest']=='older-db' and p['version']=='v0.2' for r,a,p in seen if r=='db')
+    assert all(a=='preflight' for r,a,p in seen if r in ('app','worker1','worker2'))
+    assert all(not p['files'] for r,a,p in seen if r in ('app','db','worker1','worker2'))
+    records=v.data['deployment_components']['roles']
+    assert records['db']['manifest']=='older-db' and records['worker3']['manifest']==release.digest
+    after=Engine(result,v,release,tmp_path,remote_factory=Capture)
+    assert changed_roles(after,v.data['deployment_components'])==()
+    installed=installed_releases(after,{r:remote.states[r] for r in records})
+    assert installed['db']['version']=='v0.2' and installed['worker3']['version']==release.version
+
+
+def test_mixed_expansion_rejects_unrecorded_db_drift_before_changes(tmp_path,expansion):
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    remote.states['db']['manifest']='unrecorded'
+    with pytest.raises(ValueError,match='component deployment record'):
+        add_workers(tmp_path,target,v,release,remote_factory=remote)
+    assert all(a=='preflight' for r,a in remote.calls)
+
+
+def test_mixed_expansion_retries_after_db_commit_disconnect(tmp_path,expansion):
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    remote.failure=('db','workers-commit')
+    with pytest.raises(RuntimeError):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    remote.failure=None
+    result=add_workers(tmp_path,target,v,release,remote_factory=remote)
+    assert 'worker3' in result['hosts']
+    assert v.data['deployment_components']['roles']['db']['manifest']=='older-db'
+
+
+def test_wrong_add_package_can_be_corrected_after_metadata_only_failure(tmp_path,expansion):
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    selected=release.digest;release.digest='not-installed'
+    with pytest.raises(ValueError,match='installed on App'):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    assert json.loads((tmp_path/JOURNAL).read_text())['status']=='failed'
+    assert not remote.calls
+    release.digest=selected
+    assert 'worker3' in add_workers(tmp_path,target,v,release,remote_factory=remote)['hosts']
+
+
+@pytest.mark.parametrize('failure',[('db','workers-prepare'),('worker3','install'),('db','workers-commit')])
+def test_cancel_failed_addition_preserves_existing_workers_and_allows_readd(tmp_path,expansion,failure):
+    from prodcast_manager.workers import cancel_add_workers
+    from prodcast_manager.config import worker_addresses
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    old=copy.deepcopy(v.data['deployment_components']['roles']);remote.failure=failure
+    with pytest.raises(RuntimeError):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    remote.failure=None;remote.calls.clear()
+    saved=cancel_add_workers(tmp_path,v,remote_factory=remote)
+    assert worker_addresses(saved)==worker_addresses(c)
+    assert set(r for r,a in remote.calls)<= {'db','worker3'}
+    assert v.data['deployment_components']['roles']['db']['manifest']=='older-db'
+    assert v.data['retired_workers']['worker3']['operation']
+    assert json.loads((tmp_path/JOURNAL).read_text())['status']=='cancelled'
+    require_no_expansion(tmp_path)
+    assert all(v.data['deployment_components']['roles'][r]['content_signature']==record['content_signature'] for r,record in old.items())
+    result=add_workers(tmp_path,target,v,release,remote_factory=remote)
+    assert 'worker3' in result['hosts']
+
+
+def test_failed_cancellation_stays_resumable_and_blocks_install(tmp_path,expansion):
+    from prodcast_manager.workers import cancel_add_workers
+    c,target,v,release,remote=expansion;remote.failure=('worker3','install')
+    with pytest.raises(RuntimeError):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    remote.failure=('db','workers-cancel')
+    with pytest.raises(RuntimeError):cancel_add_workers(tmp_path,v,remote_factory=remote)
+    with pytest.raises(ValueError,match='cancellation'):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    assert json.loads((tmp_path/JOURNAL).read_text())['cancelling']
+    remote.failure=None
+    class NoWorkerReconnect(remote):
+        def __init__(self,role,*args):
+            assert role!='worker3','Already retired Worker must not be required online to retry DB cleanup'
+            super().__init__(role,*args)
+    assert 'worker3' not in cancel_add_workers(tmp_path,v,remote_factory=NoWorkerReconnect)['hosts']
+
+
+def test_cancel_local_commit_failure_recovers_without_repeating_remote_cleanup(tmp_path,expansion,monkeypatch):
+    import prodcast_manager.workers as workers
+    c,target,v,release,remote=expansion;remote.failure=('db','workers-commit')
+    with pytest.raises(RuntimeError):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    remote.failure=None
+    monkeypatch.setattr(workers,'save_config',lambda *args:(_ for _ in ()).throw(OSError('local commit failed')))
+    with pytest.raises(OSError):workers.cancel_add_workers(tmp_path,v,remote_factory=remote)
+    assert json.loads((tmp_path/JOURNAL).read_text())['cancellation_db_complete']
+    remote.calls.clear();monkeypatch.setattr(workers,'save_config',save_config)
+    saved=workers.cancel_add_workers(tmp_path,v,remote_factory=remote)
+    assert 'worker3' not in saved['hosts'] and not remote.calls
+
+
+def test_cancel_before_db_transaction_does_not_invent_retirement_receipt(tmp_path,expansion):
+    from prodcast_manager.workers import cancel_add_workers
+    c,target,v,release,remote=expansion;remote.failure=('db','workers-prepare')
+    with pytest.raises(RuntimeError):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    remote.failure=None
+    class NoTransaction(remote):
+        def action(self,p,action,resources):
+            if action=='workers-cancel':return {'cancelled':True,'transaction_found':False}
+            return super().action(p,action,resources)
+    cancel_add_workers(tmp_path,v,remote_factory=NoTransaction)
+    assert 'worker3' not in v.data.get('retired_workers',{})
+    assert 'worker3' in add_workers(tmp_path,target,v,release,remote_factory=remote)['hosts']
+
+
+def test_cancel_pending_batch_retires_all_new_workers_only(tmp_path,expansion):
+    from prodcast_manager.workers import cancel_add_workers
+    c,target,v,release,remote=expansion
+    target['hosts']['worker4']={**target['hosts']['worker3'],'address':'192.168.31.87'}
+    remote.failure=('worker4','install')
+    with pytest.raises(RuntimeError):add_workers(tmp_path,target,v,release,remote_factory=remote)
+    remote.failure=None;remote.calls.clear();cancel_add_workers(tmp_path,v,remote_factory=remote)
+    assert {r for r,a in remote.calls if a=='cancel-worker-addition'}=={'worker3','worker4'}
+    assert set(r for r,a in remote.calls)<= {'db','worker3','worker4'}
+    assert set(v.data['retired_workers'])=={'worker3','worker4'}
 
 
 def test_gui_expansion_bypasses_save_and_handles_result(tmp_path,expansion,monkeypatch):

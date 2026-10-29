@@ -49,6 +49,21 @@ def test_unapplied_release_cannot_be_declared_complete(agent,monkeypatch):
     with pytest.raises(RuntimeError,match='not fully installed'):agent.installation_healthcheck()
 
 
+def test_completed_component_checks_installed_compose_images_not_selected_zip(agent,monkeypatch):
+    import json
+    prepare(agent,monkeypatch);agent.P['installed_runtime']=True;agent.P['images']={}
+    roles=agent.APIS+['frontend','gateway','celery-worker','celery-beat']
+    monkeypatch.setattr(agent,'current_dc',lambda *a,**kw:json.dumps({'services':{r:{'image':'installed-'+r} for r in roles}}))
+    inspected=[]
+    def run(args,**kw):
+        if args[:3]==['docker','image','inspect']:
+            inspected.append(args[-1]);assert args[-1].startswith('installed-')
+        return 'sha256:installed'
+    monkeypatch.setattr(agent,'run',run)
+    assert agent.installation_healthcheck()['healthy']
+    assert set(inspected)=={'installed-'+r for r in roles}
+
+
 @pytest.mark.parametrize('resume',[False,True])
 def test_consumer_control_targets_only_selected_worker(agent,monkeypatch,resume):
     calls=[];selected='prodcast-worker-01@host';other='prodcast-worker-02@host'

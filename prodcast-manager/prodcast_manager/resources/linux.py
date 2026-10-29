@@ -1271,13 +1271,24 @@ def installation_healthcheck():
         if not configured or configured[-1]!=tls_revision():raise RuntimeError('Saved App configuration differs from deployed settings; restore the installed settings before reconciliation')
         required=set(APIS+['frontend','gateway','celery-worker','celery-beat'])
         if not required<=healthy_services('app'):raise RuntimeError('App services (including scheduler) are not all healthy; no services were started by this check')
-        images={service:P['images']['prodcast-backend']['transport_tag'] for service in APIS+['celery-worker','celery-beat']}
-        images.update(frontend=P['images']['prodcast-frontend']['transport_tag'],gateway=P['images']['prodcast-gateway']['transport_tag'])
+        if P.get('installed_runtime'):
+            images={service:None for service in APIS+['celery-worker','celery-beat','frontend','gateway']}
+        else:
+            images={service:P['images']['prodcast-backend']['transport_tag'] for service in APIS+['celery-worker','celery-beat']}
+            images.update(frontend=P['images']['prodcast-frontend']['transport_tag'],gateway=P['images']['prodcast-gateway']['transport_tag'])
         verify()
         if not P.get('external_activation') and not {'api','license-proxy'}<=healthy_services('license'):
             raise RuntimeError('License services are not healthy')
     else:raise RuntimeError('Unsupported core healthcheck role')
-    # A healthy old container is not proof that the selected release is running.
+    if P.get('installed_runtime'):
+        # A completed component receipt binds this check to its own installed
+        # Compose definition, rather than images from an unrelated selected ZIP.
+        installed=json.loads(current_dc(role,'config','--format','json'))
+        services=installed.get('services',{})
+        images={service:services.get(service,{}).get('image') for service in images}
+        if not all(isinstance(image,str) and image for image in images.values()):
+            raise RuntimeError('Installed Compose image definitions are incomplete')
+    # A healthy old container is not proof that the expected installed image is running.
     for service,image in images.items():
         expected=run(['docker','image','inspect','--format','{{.Id}}',image]).strip()
         ids=dc(role,'ps','-q',service).split()

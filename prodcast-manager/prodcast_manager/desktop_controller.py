@@ -87,6 +87,10 @@ class DesktopController:
             receipt = self._json(self.directory / 'ui-deployed.json')
             journal = self._json(self.directory / 'journal.json')
             installed = bool(vault.get('topology') and (receipt.get('version') or journal.get('status') == 'complete' or journal.get('mode') in ('update','repair')))
+            saved_roles=list(worker_roles(runtime_config(self.directory/'site.json'))) if (self.directory/'site.json').exists() else []
+            from .workers import expansion_started
+            expansion=self._json(self.directory/'workers-journal.json')
+            pending_addition=bool(expansion.get('status') in ('running','failed'))
             applied = 'unknown'
             if receipt and (self.directory / 'site.json').exists():
                 key = (self.directory / 'secrets.key').read_text('ascii').strip()
@@ -96,7 +100,9 @@ class DesktopController:
                         profile_path=str(self.directory), sites=self.sites(), config=copy.deepcopy(self.config),
                         packages=dict(self.packages), busy=self.busy, dirty=self.dirty,
                         installed=installed, identity_bound=bool(vault.get('topology')), active=self.active['id'] if self.active else None,
-                        installed_workers=list(worker_roles(runtime_config(self.directory / 'site.json'))) if (self.directory / 'site.json').exists() else [],
+                        installed_workers=saved_roles,
+                        draft_workers=[r for r in worker_roles(self.config) if not vault.get('topology') or r not in saved_roles],
+                        pending_worker_addition=dict(new_workers=expansion.get('new_workers',[]),server_changes=expansion_started(expansion),cancelling=bool(expansion.get('cancelling'))) if pending_addition else None,
                         credentials={r:{k:bool(v) for k,v in a.items()} for r,a in vault.get('ssh',{}).items()},
                         worker_services={r:{**{k:v for k,v in account.items() if k!='password'},'password_stored':bool(account.get('password'))} for r,account in vault.get('worker_services',{}).items()},
                         directory=public_directory, activation=activation,
@@ -164,13 +170,15 @@ class DesktopController:
         # No password/key material may enter the public profile or draft.
         if set(value) - set(self.config): raise ValueError('Unknown profile fields')
         if not isinstance(value.get('hosts'),dict): raise ValueError('Invalid hosts')
-        from .worker_queues import execution_queues
         allowed = {'address','port','username','auth','key_path','fingerprint','execution_queues'}
         for role, host in value['hosts'].items():
             if role not in ('app','db','ai') and not re.fullmatch(r'worker(?:[1-9]|1[0-6])',role): raise ValueError('Invalid role')
-            if not isinstance(host,dict) or set(host) - allowed: raise ValueError('Secrets belong in encrypted access storage')
-            if role.startswith('worker'):execution_queues(host)
-            elif 'execution_queues' in host:raise ValueError('Queue selection is only supported for Workers')
+            if not isinstance(host,dict):raise ValueError(role+': invalid server settings')
+            if {'password','passphrase','sudo_password'} & set(host):raise ValueError('Secrets belong in encrypted access storage')
+            unknown=set(host)-allowed
+            if unknown:raise ValueError(role+': unsupported server profile fields: '+', '.join(sorted(unknown)))
+            from .config import validate_execution_queues
+            validate_execution_queues(role,host)
             host['port'] = int(host.get('port',22) or 22)
         reconciled=self._reconcile_removed_workers(value,payload.get('membership_stamp',self.membership_stamp))
         self.config = value
@@ -390,7 +398,8 @@ class DesktopController:
         if mode not in ('install','update','repair','ai','status','check','backup','app-tls','healthcheck'): raise ValueError('Unsupported operation')
         config = self._prepare(); validate(config,True)
         vault = self._vault(); packages = dict(self.packages); directory = self.directory
-        needs_release = mode in ('install','update','repair','ai','healthcheck')
+        completed_receipts=bool(vault.data.get('deployment_components')) and self._json(directory/'journal.json').get('status')=='complete'
+        needs_release = mode in ('install','update','repair','ai') or mode=='healthcheck' and not completed_receipts
         if needs_release and not packages['release']: raise ValueError('Select the complete release first')
         def perform():
             from .ai_policy import preserve_existing_ai,can_reconnect_existing_ai
@@ -408,7 +417,8 @@ class DesktopController:
                 with self.lock:self.config=saved
             if mode in ('install','update','healthcheck') and self._json(directory / 'journal.json').get('status') == 'complete':
                 key = (directory / 'secrets.key').read_text('ascii').strip()
-                atomic_json(directory / 'ui-deployed.json',dict(version=release.version,manifest=release.digest,signature=self._signature(config,vault.data,key)))
+                app_record=vault.data.get('deployment_components',{}).get('roles',{}).get('app',{})
+                atomic_json(directory / 'ui-deployed.json',dict(version=app_record.get('version',getattr(release,'version','')),manifest=app_record.get('manifest',getattr(release,'digest','')),signature=self._signature(config,vault.data,key)))
             return {'mode':mode,'finished':True,'result':result,'pending':pending_operations(directory)}
         return self._job(mode,perform)
 
@@ -422,6 +432,22 @@ class DesktopController:
         self.dirty = True
         return {'role':role}
 
+    def remove_worker_draft(self,payload):
+        from .config import file_lock
+        from .workers import draft_removal
+        self._idle();role=payload['role']
+        with file_lock(self.directory/'operation.lock'):
+            saved=self._json(self.directory/'site.json')
+            if role not in worker_roles(self.config):raise ValueError('Select a Worker address to remove')
+            if self._read_vault().get('topology') and role in saved.get('hosts',{}):
+                raise ValueError('This Worker belongs to the installed roster; use the installed Worker removal action')
+            if len(worker_roles(self.config))<=1:raise ValueError('Keep at least one Worker address')
+            draft_removal(self.directory,role)
+            del self.config['hosts'][role]
+            self.save_draft()
+            self.emit(role+': uninstalled Worker address removed; no server changes were made.')
+            return dict(removed=role,local_only=True)
+
     def set_initial_workers(self, payload):
         self._idle()
         if self._read_vault().get('topology'): raise ValueError('Use worker actions on an installed site')
@@ -433,17 +459,19 @@ class DesktopController:
         return {'count':count}
 
     def worker_action(self, payload):
-        from .workers import add_workers
+        from .workers import add_workers,cancel_add_workers
         from .worker_lifecycle import run_worker_action
         self._idle()
         mode = payload['mode']; role = payload.get('role','')
-        if mode not in ('add-workers','worker-repair','worker-remove'): raise ValueError('Invalid worker action')
+        if mode not in ('add-workers','worker-repair','worker-remove','cancel-add-workers'): raise ValueError('Invalid worker action')
         directory = self.directory; packages = dict(self.packages); vault = self._vault()
         target = copy.deepcopy(self.config)
-        if mode != 'worker-remove' and not packages['release']: raise ValueError('Select the exact installed complete release')
+        if mode not in ('worker-remove','cancel-add-workers') and not packages['release']: raise ValueError('Select an installed App/Worker release for Add Workers, or the selected Worker payload for repair')
         def run():
-            release = Release(packages['release'],directory / 'cache',packages['trusted'],validate_ai=False) if mode != 'worker-remove' else None
-            saved = add_workers(directory,target,vault,release,self.emit,diagnostics=self.log) if mode == 'add-workers' else run_worker_action(directory,role,mode,vault,release,self.emit,diagnostics=self.log,selected_queues=target['hosts'][role].get('execution_queues') if mode=='worker-repair' else None)
+            release = Release(packages['release'],directory / 'cache',packages['trusted'],validate_ai=False) if mode not in ('worker-remove','cancel-add-workers') else None
+            if mode=='cancel-add-workers':saved=cancel_add_workers(directory,vault,self.emit,diagnostics=self.log)
+            elif mode=='add-workers':saved=add_workers(directory,target,vault,release,self.emit,diagnostics=self.log)
+            else:saved=run_worker_action(directory,role,mode,vault,release,self.emit,diagnostics=self.log,selected_queues=target['hosts'][role].get('execution_queues') if mode=='worker-repair' else None)
             (directory / 'ui-draft.json').unlink(missing_ok=True)
             with self.lock:
                 self.config = saved; self.dirty = False;self.membership_stamp=self._membership_stamp()
@@ -567,7 +595,7 @@ class DesktopController:
         payload = payload or {}
         allowed = {'update','save_draft','new_site','select_site','import_profile','save_profile','save_access',
                    'language_set','logs','scan_server','trust_server','check_server','verify_release','run',
-                   'add_worker_draft','set_initial_workers','worker_action','stop','directory_save','directory_probe',
+                   'add_worker_draft','remove_worker_draft','set_initial_workers','worker_action','stop','directory_save','directory_probe',
                    'activation_save','initialize_identity','certificate_check','certificate_save','administrator','maintenance'}
         allowed.update(('directory_ca','unlock_legacy','worker_service_save','update_preview'))
         if action == 'state': return self.snapshot()

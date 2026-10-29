@@ -69,6 +69,31 @@ def test_public_config_cannot_accept_credentials_or_unknown_fields(controller):
     with pytest.raises(ValueError,match='Unsupported'): controller.dispatch('__getattribute__',{})
 
 
+def test_worker_queue_settings_survive_sync_and_unused_address_removal(controller):
+    value=configured();value['hosts']['worker1']['execution_queues']=['workflows','workflows_data']
+    value['hosts']['worker2']['execution_queues']=['workflows_data','scenarios']
+    controller.update({'config':value});controller.save_profile()
+    vault=controller._vault();vault.initialize(controller.config);vault.save()
+    before=copy.deepcopy(runtime_site(controller))
+    role=controller.add_worker_draft()['role']
+    controller.update({'config':controller.config});controller.remove_worker_draft({'role':role})
+    assert runtime_site(controller)==before
+    assert controller.config['hosts']['worker1']['execution_queues']==['workflows','workflows_data']
+    assert controller.config['hosts']['worker2']['execution_queues']==['workflows_data','scenarios']
+
+
+def test_unknown_public_fields_get_precise_error_without_leaking_values(controller):
+    value=copy.deepcopy(controller.config);value['hosts']['worker1']['unexpected']='private-test-value'
+    with pytest.raises(ValueError,match='worker1: unsupported server profile fields: unexpected') as error:controller.update({'config':value})
+    assert 'private-test-value' not in str(error.value)
+
+
+@pytest.mark.parametrize('queues',['workflows',['workflows','workflows'],['bad queue'],[{'secret':'value'}]])
+def test_invalid_worker_queue_metadata_is_rejected(controller,queues):
+    value=copy.deepcopy(controller.config);value['hosts']['worker1']['execution_queues']=queues
+    with pytest.raises(ValueError,match='execution_queues'):controller.update({'config':value})
+
+
 def test_incomplete_draft_roundtrip_and_saved_access_follow_initial_profile(controller):
     controller.save_access({'role':'app','secrets':{'password':'keep-me'}})
     controller.save_draft()
@@ -171,6 +196,39 @@ def test_worker_ids_remain_stable_when_adding_into_a_gap(controller):
     controller.config['hosts']['worker3']=controller.config['hosts'].pop('worker2')
     assert controller.add_worker_draft()['role']=='worker2'
     assert set(controller.config['hosts'])=={'app','db','ai','worker1','worker2','worker3'}
+
+
+def test_remove_uninstalled_address_keeps_runtime_profile_and_persists_draft(controller):
+    controller.update({'config':configured()});controller.save_profile()
+    vault=controller._vault();vault.initialize(controller.config);vault.save()
+    before=copy.deepcopy(runtime_site(controller));secrets=copy.deepcopy(vault.data)
+    role=controller.add_worker_draft()['role'];assert role=='worker3'
+    assert role in controller.snapshot()['draft_workers']
+    assert controller.remove_worker_draft({'role':role})['local_only']
+    assert runtime_site(controller)==before and controller._read_vault()==secrets
+    assert role not in DesktopController(controller.home).config['hosts']
+
+
+def test_remove_after_failed_add_preflight_cancels_only_local_plan(controller):
+    controller.config=configured();controller.save_profile()
+    vault=controller._vault();vault.initialize(controller.config);vault.save()
+    role=controller.add_worker_draft()['role']
+    path=controller.directory/'workers-journal.json'
+    atomic_json(path,dict(operation='failed-preflight',status='failed',phase='preflight',new_workers=[role],steps=[]))
+    controller.remove_worker_draft({'role':role})
+    assert controller._json(path)['status']=='cancelled'
+    assert controller.snapshot()['pending_worker_addition'] is None
+    assert list((controller.directory/'history').glob('workers-before-cancel-*'))
+
+
+def test_draft_remove_cannot_hide_server_changes_or_remove_installed_member(controller):
+    controller.config=configured();controller.save_profile()
+    vault=controller._vault();vault.initialize(controller.config);vault.save()
+    role=controller.add_worker_draft()['role']
+    atomic_json(controller.directory/'workers-journal.json',dict(operation='started',status='failed',phase='applying',new_workers=[role],steps=[]))
+    with pytest.raises(ValueError,match='Cancel'):controller.remove_worker_draft({'role':role})
+    with pytest.raises(ValueError,match='installed roster'):controller.remove_worker_draft({'role':'worker1'})
+    assert role in controller.config['hosts']
 
 
 def test_fingerprint_trust_is_explicit_and_bound_to_endpoint(controller,monkeypatch):

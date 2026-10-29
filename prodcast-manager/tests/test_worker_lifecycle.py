@@ -2,6 +2,7 @@ import copy
 import json
 import pytest
 from test_workers import expansion
+from test_workers import mixed_expansion
 from prodcast_manager.worker_lifecycle import run_worker_action, removal_target, JOURNAL
 from prodcast_manager.config import topology_hash, validate, validate_membership, worker_roles
 from prodcast_manager.portable import runtime_config, open_credentials
@@ -50,9 +51,53 @@ def test_remove_updates_local_roster_and_releases_access(tmp_path, expansion):
 
 def test_removal_prunes_only_deleted_workers_component_receipt(tmp_path,expansion):
     c,_,vault,_,remote=expansion
-    vault.data['deployment_components']={'installation_id':vault.data['installation_id'],'roles':{'app':{'signature':'preserve-app'},'worker1':{'signature':'preserve-worker1'},'worker2':{'signature':'retire'}}}
+    from prodcast_manager.config import core_roles
+    records={r:dict(signature='preserve-'+r,version=remote.states[r]['version'],manifest=remote.states[r]['manifest']) for r in core_roles(c)}
+    vault.data['deployment_components']={'schema':1,'topology':topology_hash(c),'installation_id':vault.data['installation_id'],'roles':copy.deepcopy(records)}
     run_worker_action(tmp_path,'worker2','worker-remove',vault,remote_factory=remote)
-    assert vault.data['deployment_components']['roles']=={'app':{'signature':'preserve-app'},'worker1':{'signature':'preserve-worker1'}}
+    assert vault.data['deployment_components']['roles']=={r:v for r,v in records.items() if r!='worker2'}
+
+
+def test_mixed_version_removal_preserves_remaining_component_content(tmp_path,expansion):
+    from prodcast_manager.engine import Engine
+    from prodcast_manager.component_updates import changed_roles
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    before=copy.deepcopy(v.data['deployment_components']['roles']);seen=[]
+    class Capture(remote):
+        def action(self,p,action,resources):
+            seen.append((self.role,action,dict(p)))
+            return super().action(p,action,resources)
+    result=run_worker_action(tmp_path,'worker2','worker-remove',v,remote_factory=Capture)
+    assert all(p['manifest']=='older-db' for r,a,p in seen if r=='db')
+    after=Engine(result,v,release,tmp_path)
+    assert changed_roles(after,v.data['deployment_components'])==()
+    for role,record in v.data['deployment_components']['roles'].items():
+        assert record['content_signature']==before[role]['content_signature']
+        assert record['version']==before[role]['version']
+
+
+def test_individual_worker_repair_accepts_older_worker_than_app(tmp_path,expansion):
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    remote.states['app'].update(version='v0.4',manifest='newer-app')
+    v.data['deployment_components']['roles']['app'].update(version='v0.4',manifest='newer-app')
+    seen=[]
+    class Capture(remote):
+        def action(self,p,action,resources):
+            seen.append((self.role,action,dict(p)));return super().action(p,action,resources)
+    run_worker_action(tmp_path,'worker1','worker-repair',v,release,remote_factory=Capture)
+    assert all(p['manifest']=='newer-app' for r,a,p in seen if r=='app')
+    assert all(p['manifest']==release.digest for r,a,p in seen if r=='worker1')
+    assert not any(r=='db' for r,a,p in seen)
+
+
+def test_mixed_removal_resumes_after_local_membership_commit(tmp_path,expansion):
+    _,c,target,v,release,remote=mixed_expansion(tmp_path,expansion)
+    remote.failure=('app','maintenance-resume')
+    with pytest.raises(RuntimeError):run_worker_action(tmp_path,'worker2','worker-remove',v,remote_factory=remote)
+    assert json.loads((tmp_path/JOURNAL).read_text())['phase']=='committing'
+    remote.failure=None
+    result=run_worker_action(tmp_path,'worker2','worker-remove',v,remote_factory=remote)
+    assert 'worker2' not in result['hosts'] and 'worker2' not in v.data['deployment_components']['roles']
 
 
 @pytest.mark.parametrize('failure', [('worker2', 'repair'), ('db', 'worker-retire-membership'), ('app', 'maintenance-resume')])

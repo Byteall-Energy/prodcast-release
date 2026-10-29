@@ -43,10 +43,10 @@ def installed_releases(engine,statuses):
     versions={r:{k:statuses[r][k] for k in ('version','manifest')} for r in roles}
     baseline=engine.vault.data.get('deployment_components')
     if baseline:
-        if baseline.get('schema')!=1 or baseline.get('installation_id')!=engine.vault.data.get('installation_id') or baseline.get('topology')!=topology_hash(engine.c) or set(baseline.get('roles',{}))!=roles:
-            raise ValueError('Component deployment records do not match this installation; restore the matching profile before backup/restore')
+        from .component_updates import recorded_components
+        records=recorded_components(engine)
         for role in sorted(roles):
-            if any(baseline['roles'][role].get(k)!=v for k,v in versions[role].items()):
+            if any(records[role].get(k)!=v for k,v in versions[role].items()):
                 raise ValueError(role+': installed release differs from its component deployment record; finish or reconcile that component before backup/restore')
     elif len({(v['version'],v['manifest']) for v in versions.values()})!=1:
         raise ValueError('Different component releases need verified deployment records; restore the original Manager profile before backup/restore')

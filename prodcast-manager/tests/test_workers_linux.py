@@ -60,9 +60,34 @@ def test_db_hot_add_is_idempotent_and_never_recreates_containers(agent):
     assert a.ST['maintenance']=='' and a.ST['worker_hosts']['worker3']=='10.0.0.3'
 
 
+def test_cancel_revokes_only_added_worker_and_preserves_original_acl(agent):
+    a=agent;folder=a.ROOT/'db/config'
+    original_acl=(folder/'users.acl').read_text();original_hba=(folder/'pg_hba.conf').read_text()
+    module.dispatch(a);a.P['action']='workers-cancel'
+    assert module.dispatch(a)['original_workers_preserved']
+    assert (folder/'users.acl').read_text()==original_acl
+    assert (folder/'pg_hba.conf').read_text()==original_hba
+    assert '10.0.0.3' not in (a.STATE/'firewall.sh').read_text()
+    assert a.ST['worker_hosts']==a.P['worker_expansion']['previous_workers']
+    assert a.ST['retired_workers']['worker3']['operation']==a.P['operation']
+    assert not a.ST['maintenance']
+    assert any(sql=='ALTER ROLE prodcast_worker_03 NOLOGIN;' for kind,sql in a.calls if kind=='psql')
+    assert not any('ALTER ROLE prodcast_worker_01' in sql for kind,sql in a.calls if kind=='psql')
+    count=len(a.calls);assert module.dispatch(a)['cancelled'];assert len(a.calls)==count
+    a.P['action']='workers-prepare'
+    with pytest.raises(RuntimeError,match='cancellation'):module.dispatch(a)
+
+
+def test_cancel_without_owned_transaction_preserves_existing_accounts(agent):
+    a=agent;a.accounts.add('prodcast_worker_03');a.P['action']='workers-cancel'
+    assert module.dispatch(a)['transaction_found'] is False
+    assert not a.calls
+
+
 def test_add_after_worker1_retirement_uses_surviving_acl_template(agent):
     a=agent
     a.P['worker_expansion']['previous_workers']={'worker2':'10.0.0.2'}
+    del a.C['hosts']['worker1']
     acl=a.ROOT/'db/config/users.acl'
     acl.write_text(acl.read_text().replace('prodcast_worker_01_scheduler','prodcast_worker_02_scheduler').replace('~worker01.*','~worker02.*'))
     assert module.dispatch(a)['prepared']

@@ -75,7 +75,7 @@ def operation_summary(directory,active=None):
         mode=active.get('mode','')
         family=('maintenance-journal.json' if mode in ('export','restore','reset-keep','reset-full') else
                 'ai-journal.json' if mode=='ai' else 'app-tls-journal.json' if mode=='app-tls' else
-                'workers-journal.json' if mode=='add-workers' else 'worker-action-journal.json' if mode.startswith('worker-') else
+                'workers-journal.json' if mode in ('add-workers','cancel-add-workers') else 'worker-action-journal.json' if mode.startswith('worker-') else
                 'journal.json' if mode in ('install','update','repair') else '')
         entry=next((x for x in entries if x['journal']==family),None)
         if entry is None:

@@ -131,6 +131,18 @@ def test_add_worker_cannot_silently_change_existing_subscriptions(expansion):
     with pytest.raises(ValueError,match='separately'):candidate(c,target)
 
 
+def test_read_only_payload_does_not_require_selected_worker_package_capability(deployed):
+    e=deployed;e.c['hosts']['worker1']['execution_queues']=['workflows']
+    assert e.payload('worker1','read','healthcheck',include_files=False)['site']['hosts']['worker1']['execution_queues']==['workflows']
+    assert e.payload('app','read','check',include_files=False)['role']=='app'
+    with pytest.raises(ValueError,match='compatible Worker'):e.payload('worker1','write','update')
+
+
+def test_installing_default_worker_does_not_revalidate_other_workers_payloads(deployed):
+    e=deployed;e.c['hosts']['worker1']['execution_queues']=['scenarios']
+    assert e.payload('worker2','write','update')['role']=='worker2'
+
+
 def consumer_control(agent,monkeypatch,active,fail_drain=False):
     calls=[]
     class Inspect:

@@ -171,8 +171,8 @@ def test_healthcheck_rejects_foreign_owner_and_wrong_release(deployed):
     with pytest.raises(ValueError,match='ownership'):e.run('healthcheck')
     assert not any(a=='reconcile' for r,a,p in e.test_calls)
     e.test_calls.clear();e.release.digest='newer-not-installed'
-    with pytest.raises(ValueError,match='exact release'):e.run('healthcheck')
-    assert not e.test_calls
+    with pytest.raises(ValueError,match='ownership'):e.run('healthcheck')
+    assert not any(a=='reconcile' for r,a,p in e.test_calls)
 
 
 def test_signatures_are_platform_selection_independent(deployed):
@@ -256,3 +256,57 @@ def test_healthcheck_can_finalize_completed_target_of_failed_scoped_update(deplo
     assert expected['worker1']['manifest']=='target-release'
     assert expected['app']['manifest']!='target-release'
     assert set(a for r,a,p in e.test_calls)=={'preflight','healthcheck','reconcile'}
+
+
+def test_completed_mixed_healthcheck_needs_no_release_and_preserves_records(deployed):
+    e=deployed;change(e,'app');e.run('update')
+    before=copy.deepcopy(e.vault.data['deployment_components'])
+    e.test_calls.clear();e.release=None
+    assert e.run('healthcheck')['healthy']
+    assert e.vault.data['deployment_components']==before
+    assert all(p['version']==before['roles'][r]['version'] and p['manifest']==before['roles'][r]['manifest'] for r,a,p in e.test_calls)
+    assert all(p['installed_runtime'] for r,a,p in e.test_calls)
+
+
+def test_mixed_core_repair_uses_installed_versions_and_keeps_healthy_workers(deployed):
+    e=deployed;change(e,'app');e.run('update')
+    before=copy.deepcopy(e.vault.data['deployment_components']);e.test_calls.clear()
+    result=e.run('repair')
+    assert result['healthy_workers_preserved']==['worker1','worker2']
+    assert e.vault.data['deployment_components']==before
+    assert not any(a in ('claim','repair','commit','install','stop') for r,a,p in e.test_calls if r.startswith('worker'))
+    assert not any(a in ('bootstrap','install','configure','migrate') for r,a,p in e.test_calls)
+    assert all(p['manifest']==before['roles'][r]['manifest'] for r,a,p in e.test_calls)
+
+
+def test_mixed_repair_accepts_identical_worker_payload_without_upgrade(deployed):
+    e=deployed;change(e,'app');e.run('update');e.test_calls.clear()
+    e.test_remote.fail=('worker1','healthcheck')
+    old=copy.deepcopy(e.vault.data['deployment_components']['roles']['worker1'])
+    assert 'worker1' in e.run('repair')['repaired_roles']
+    assert e.test_versions['worker1']['version']==old['version']
+    assert e.test_versions['worker1']['manifest']==old['manifest']
+
+
+def test_mixed_repair_refuses_different_worker_files_before_claim(deployed):
+    e=deployed;change(e,'app');e.run('update');change(e,'worker1');e.test_calls.clear()
+    e.test_remote.fail=('worker1','healthcheck')
+    with pytest.raises(ValueError,match='installed Worker payload'):e.run('repair')
+    assert not any(a in ('claim','repair','commit') for r,a,p in e.test_calls)
+
+
+def test_mixed_certificate_action_binds_app_identity_without_complete_release(deployed):
+    e=deployed;change(e,'app');e.run('update');e.test_calls.clear();e.release=None
+    e.vault.data['app_tls']={'url':e.c['public_url']}
+    e._apply_app_tls()
+    record=e.vault.data['deployment_components']['roles']['app']
+    assert all(p['manifest']==record['manifest'] for r,a,p in e.test_calls if a=='app-tls')
+    assert all(r=='app' for r,a,p in e.test_calls)
+
+
+def test_mixed_server_backup_uses_each_installed_release(deployed):
+    e=deployed;change(e,'app');e.run('update');e.test_calls.clear();e.release=None
+    e.run('backup')
+    records=e.vault.data['deployment_components']['roles']
+    assert all(p['manifest']==records[r]['manifest'] for r,a,p in e.test_calls if a=='backup')
+    assert not any(a in ('claim','install','commit') for r,a,p in e.test_calls)

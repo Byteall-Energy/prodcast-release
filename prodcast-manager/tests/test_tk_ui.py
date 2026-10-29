@@ -136,6 +136,36 @@ def test_worker_actions_always_present_with_explanation(window):
     assert str(window.worker_buttons['remove'].cget('state'))=='disabled'
 
 
+def test_remove_address_button_works_for_unconfigured_draft(window):
+    window.navigate('servers');window.add_worker();role=window.role
+    assert not window.config['hosts'][role]['address']
+    assert str(window.worker_buttons['remove'].cget('state'))=='normal'
+    window.worker_buttons['remove'].invoke()
+    assert role not in window.config['hosts'] and role not in window.controller.config['hosts']
+
+
+def test_remove_address_with_existing_worker_queue_settings(window):
+    window.config['hosts']['worker1']['execution_queues']=['workflows','workflows_data']
+    window.config['hosts']['worker2']['execution_queues']=['workflows_data','scenarios']
+    window.navigate('servers');window.add_worker();role=window.role
+    window.worker_buttons['remove'].invoke()
+    assert role not in window.controller.config['hosts']
+    assert window.controller.config['hosts']['worker1']['execution_queues']==['workflows','workflows_data']
+    assert window.controller.config['hosts']['worker2']['execution_queues']==['workflows_data','scenarios']
+    window.message.assert_not_called()
+
+
+def test_pending_addition_remove_offers_cancellation_instead_of_hiding_row(window,monkeypatch):
+    from prodcast_manager.config import atomic_json
+    window.navigate('servers');window.add_worker();role=window.role
+    atomic_json(window.controller.directory/'workers-journal.json',dict(operation='partly-installed',status='failed',phase='applying',new_workers=[role],steps=[]))
+    window.refresh();start=Mock();monkeypatch.setattr(window,'start',start)
+    assert str(window.worker_buttons['remove'].cget('state'))=='normal'
+    window.worker_buttons['remove'].invoke()
+    start.assert_called_once_with('worker_action',{'mode':'cancel-add-workers','role':role})
+    assert role in window.controller.config['hosts']
+
+
 def test_worker_count_and_auth_do_not_change_on_scroll(window):
     window.navigate('servers');count=window.worker_count.get();method=window.config['hosts']['app']['auth']
     window.fields['auth'].event_generate('<MouseWheel>',delta=-120)

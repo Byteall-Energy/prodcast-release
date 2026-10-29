@@ -59,7 +59,7 @@ function Preflight {
         if($script:state.maintenance -and $script:state.maintenance -ne $p.operation -and $p.action -notin @('preflight','release-operation')){throw 'A maintenance operation owns this VM; resume it from the original profile'}
         if($p.mode -in @('install','update','repair') -and $script:state.version -eq $p.version -and $script:state.manifest -ne $p.manifest){throw 'Same release version has a different manifest'}
         if($script:state.operation -and $script:state.operation -ne $p.operation -and $p.mode -in @('install','update','repair') -and $p.action -ne 'release-operation' -and $p.previous_operation -ne $script:state.operation){throw 'Another operation owns this VM; resume original journal'}
-        $reclaim=$script:state.retired -eq $true -and $p.worker_expansion.reactivated_workers.($p.role).operation
+        $reclaim=$p.mode -eq 'add-workers' -and $script:state.retired -eq $true -and $p.worker_expansion.reactivated_workers.($p.role).operation
         if($reclaim -and $script:state.retirement_operation -and $script:state.retirement_operation -ne $p.worker_expansion.reactivated_workers.($p.role).operation){throw 'Worker retirement receipt does not match'}
         if($p.mode -eq 'add-workers' -and $p.worker_expansion.new_workers -contains $p.role -and $script:state.worker_expansion -ne $p.operation -and !$reclaim){throw 'This VM is not owned by this Worker expansion; a cloned active Worker must be repaired or removed before re-adding'}
         return @{managed=$true;version=$script:state.version;hostname=$env:COMPUTERNAME;operation=$script:state.operation;manifest=$script:state.manifest;maintenance=$script:state.maintenance;worker_expansion=$script:state.worker_expansion;retired=($script:state.retired -eq $true)}
@@ -414,7 +414,12 @@ function Test-ExistingWorker {
     }
     $siteConfig=Get-Content -Raw -LiteralPath (Join-Path $candidate 'site.json') | ConvertFrom-Json
     $marker=Get-Content -Raw -LiteralPath (Join-Path $candidate 'logs\scheduler-service-ready.json') | ConvertFrom-Json
-    if($siteConfig.worker_number -ne $number -or $siteConfig.postgres_host -ne $p.site.hosts.db.address -or $marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker identity/isolation/TLS readiness mismatch'}
+    $expectedMode=$executionMode
+    if($p.installed_runtime -and !$p.installed_policy_known){
+        $expectedMode=$siteConfig.execution_mode
+        if($expectedMode -notin @('windows-appcontainer','windows-account')){throw 'Unknown installed Worker execution mode'}
+    }
+    if($siteConfig.worker_number -ne $number -or $siteConfig.postgres_host -ne $p.site.hosts.db.address -or $marker.mode -ne $expectedMode -or !$marker.postgres_tls){throw 'Worker identity/isolation/TLS readiness mismatch'}
     if(!(Test-WorkerQueues $siteConfig $marker)){throw 'Worker queue readiness mismatch'}
     return @{healthy=$true;service=$service;account=$registration.StartName;path=$candidate;postgres_tls=$true;services_restarted=$false}
 }
@@ -572,6 +577,14 @@ function Dispatch {
         'worker-retire' {
             if($p.mode -ne 'worker-remove' -or $p.worker_action.role -ne $p.role -or $script:state.maintenance -ne $p.operation){throw 'Invalid Worker removal ownership'}
             $result=Dispatch-WorkerRetire
+            return $result
+        }
+        'cancel-worker-addition' {
+            if($p.mode -ne 'cancel-add-workers' -or $p.worker_expansion.id -ne $p.operation -or $p.worker_expansion.new_workers -notcontains $p.role){throw 'Invalid Worker addition cancellation'}
+            if(!$script:state){return @{cancelled=$true;already_clean=$true}}
+            if($script:state.worker_expansion -ne $p.operation -or $script:state.operation -notin @('',$null,$p.operation) -or $script:state.maintenance -notin @('',$null,$p.operation)){throw 'Worker does not belong to this pending addition; cancellation refused'}
+            $result=Dispatch-WorkerRetire
+            $script:state.PSObject.Properties.Remove('maintenance');Save-State
             return $result
         }
         'claim' {

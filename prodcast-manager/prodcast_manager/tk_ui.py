@@ -347,7 +347,7 @@ class DesktopWindow:
         self.edit(form,'Exact installed complete release ZIP','ZIP точного установленного релиза',self.packages,'release',browse='zip')
         self.edit(form,'Expected manifest SHA256','Ожидаемый SHA256 манифеста',self.packages,'trusted')
         self.button(form,'Healthcheck and finalize…','Проверить здоровье и завершить…',self.healthcheck,True)
-        self.note('Checks all core components without restarting or reinstalling them. If all checks pass, only ownership/completion records are reconciled; AI installation and updates become available. Use the original profile and exact installed release.','Проверяет основной стек без перезапуска и переустановки. При успехе согласуются только записи владельцев/завершения; становятся доступны AI и обновления. Нужны исходный профиль и точный установленный релиз.')
+        self.note('Checks each core component against its own installed version without restarting services. A completed installation with verified component records needs no release ZIP. To finalize an interrupted deployment, select its original release and profile.','Проверяет каждый основной компонент по его установленной версии без перезапуска служб. Для завершённой установки с подтверждёнными записями компонентов ZIP не нужен. Для завершения прерванного развёртывания выберите исходный релиз и профиль.')
 
     def healthcheck(self):
         if self.confirm(self.t('Verify existing installation','Проверить существующую установку'),self.t('Verify all core components and finalize the interrupted journal only if they are healthy? No service is restarted, reinstalled or assigned a different account.','Проверить все основные компоненты и завершить журнал только при успешной проверке? Службы не перезапускаются, не переустанавливаются и не меняют учётные записи.')):
@@ -358,16 +358,20 @@ class DesktopWindow:
         form=self.group('Worker actions','Действия с Workers')
         bar=ttk.Frame(form,style='White.TFrame');form.addRow(bar)
         self.worker_buttons={}
+        pending_addition=self.state.get('pending_worker_addition') or {}
+        cancelling=self.role in pending_addition.get('new_workers',[]) and pending_addition.get('server_changes')
+        draft=self.role in self.state.get('draft_workers',[])
+        remove_en,remove_ru=('Cancel Worker addition…','Отменить добавление Worker…') if cancelling else ('Remove address','Убрать адрес') if draft else ('Remove worker…','Удалить Worker…')
         entries=[('add','Add worker address','Добавить адрес Worker',self.add_worker,True),
             ('install','Install added workers…','Установить добавленных Workers…',lambda:self.worker_action('add-workers'),self.state['installed']),
             ('repair','Repair / reinstall worker…','Восстановить Worker…',lambda:self.worker_action('worker-repair'),self.state['installed'] and self.role in self.state['installed_workers']),
-            ('remove','Remove worker…','Удалить Worker…',lambda:self.worker_action('worker-remove'),self.state['installed'] and self.role in self.state['installed_workers'])]
+            ('remove',remove_en,remove_ru,lambda:self.worker_action('worker-remove'),cancelling or draft or self.state['installed'] and self.role in self.state['installed_workers'])]
         for index,(key,en,ru,fn,enabled) in enumerate(entries):
             b=ttk.Button(bar,text=self.t(en,ru),command=lambda action=fn:self.guard(action))
             b.grid(row=index//2,column=index%2,sticky='ew',padx=4,pady=4);bar.columnconfigure(index%2,weight=1)
             b.configure(state='normal' if enabled and not self.state['busy'] else 'disabled');self.worker_buttons[key]=b
             self.mutable.append((b,'normal' if enabled else 'disabled'))
-        self.label(self.t('Repair/remove require an installed profile and a selected installed Worker. Adding/repairing requires the exact installed release. For a new site, worker addresses are installed with the stack.','Ремонт/удаление требуют установленного профиля и выбранного установленного Worker. Для добавления/ремонта нужен точный установленный релиз. На новой площадке адреса Workers устанавливаются со стеком.'),self.content,True)
+        self.label(self.t('Add Workers accepts a release installed on App or an existing Worker; DB can use an older version. Repair needs the selected Worker’s installed payload or verified identical files. Remove needs no ZIP.','Для добавления подходит релиз App или существующего Worker; версия DB может быть старше. Для ремонта нужен установленный пакет выбранного Worker или подтверждённые идентичные файлы. Для удаления ZIP не нужен.'),self.content,True)
         form=self.group('Servers and addresses','Серверы и адреса')
         self.server_tree=ttk.Treeview(form,columns=('ip','user','auth','trust'),show='tree headings',height=min(len(self.config['hosts']),8),selectmode='browse')
         for key,title,width in [('#0',self.t('Server','Сервер'),100),('ip','IPv4',155),('user',self.t('SSH user','Пользователь SSH'),160),('auth',self.t('Access','Доступ'),120),('trust',self.t('Fingerprint','Отпечаток'),135)]:
@@ -537,6 +541,7 @@ class DesktopWindow:
 
     def operation_name(self,item):
         mode=item.get('mode') or {'journal.json':'deployment','ai-journal.json':'ai','workers-journal.json':'add-workers','worker-action-journal.json':'worker-action','app-tls-journal.json':'app-tls','maintenance-journal.json':'maintenance'}.get(item.get('journal'),'operation')
+        if mode=='cancel-add-workers':return self.t('Cancel Worker addition','Отмена добавления Workers')
         names={'export':('Backup export','Экспорт бэкапа'),'restore':('Data restore','Восстановление данных'),'update':('Stack update','Обновление стека'),'install':('Installation','Установка'),'ai':('AI operation','Операция AI'),'add-workers':('Add Workers','Добавление Workers'),'worker-repair':('Worker repair','Ремонт Worker'),'worker-remove':('Worker removal','Удаление Worker'),'app-tls':('App certificate','Сертификат App')}
         return self.t(*names[mode]) if mode in names else mode.replace('-',' ').capitalize()
 
@@ -668,7 +673,7 @@ class DesktopWindow:
         descriptions={
             'install':self.t('Install the selected complete release on the configured servers?','Установить выбранный релиз на настроенные серверы?'),
             'update':self.t('App and scheduling will stop. Backups are created; database rollback is not automatic. Keep existing AI means AI packages are deliberately skipped. Continue?','App и планировщик остановятся. Будут созданы бэкапы; автоотката БД нет. «Сохранить AI» означает намеренный пропуск AI-пакетов. Продолжить?'),
-            'repair':self.t('Use the exact installed release. Services may restart; data is retained. Continue?','Нужен точный установленный релиз. Службы могут перезапуститься; данные сохраняются. Продолжить?'),
+            'repair':self.t('Repair each component using its installed version and keep healthy Workers running. A damaged Worker needs its installed payload or verified identical files. Services may restart; data is retained. Continue?','Восстановить компоненты по их установленным версиям, сохранив работающие Workers? Для повреждённого Worker нужен его установленный пакет или подтверждённые идентичные файлы. Возможен перезапуск служб; данные сохранятся. Продолжить?'),
             'app-tls':self.t('Apply the saved certificate and restart App web services?','Применить сертификат и перезапустить веб-службы App?')}
         if mode in descriptions and not self.confirm(self.t('Review operation','Подтверждение операции'),descriptions[mode]):return
         self.start('run',{'mode':mode})
@@ -696,6 +701,18 @@ class DesktopWindow:
 
 
     def worker_action(self,mode):
+        if mode=='worker-remove':
+            self.sync();state=self.controller.snapshot();pending=state.get('pending_worker_addition') or {}
+            if self.role in pending.get('new_workers',[]) and pending.get('server_changes'):
+                names=', '.join(pending['new_workers'])
+                if self.confirm(self.t('Cancel Worker addition','Отменить добавление Workers'),self.t('Cancel the pending addition of: ','Отменить незавершённое добавление: ')+names+'?\n'+self.t('Partially installed new Worker services will stop and their DB/Redis access will be revoked. Existing App and Workers are preserved. Keep the profile and journal if cleanup fails.','Службы новых Workers будут остановлены, их доступ к DB/Redis отозван. Существующие App и Workers сохранятся. При ошибке очистки сохраните профиль и журнал.')):
+                    self.start('worker_action',{'mode':'cancel-add-workers','role':self.role})
+                return
+            if self.role in state.get('draft_workers',[]):
+                if self.confirm(self.t('Remove Worker address','Убрать адрес Worker'),self.t('Remove this uninstalled Worker address from the profile draft? No server will be changed.','Убрать адрес неустановленного Worker из черновика профиля? Серверы не изменятся.')):
+                    removed=self.role;self.controller.remove_worker_draft({'role':removed});self.access.pop(removed,None)
+                    self.role='app';self.refresh();self.toast(self.t('Worker address removed.','Адрес Worker убран.'))
+                return
         if self.confirm(self.t('Review worker action','Операция с Worker'),mode+' · '+self.role+'\n'+self.t('Services may stop. Removal changes stack membership. Keep profile and logs on failure.','Службы могут остановиться. Удаление меняет состав стека. При ошибке сохраните профиль и журналы.')):
             self.start('worker_action',{'mode':mode,'role':self.role})
 
@@ -858,6 +875,8 @@ class DesktopWindow:
             self.message(self.t('Server backup completed','Бэкапы на серверах созданы'),
                 self.t('Server backups completed successfully.','Резервное копирование на серверах успешно завершено.')+'\n\n'+'\n'.join(paths)+'\n\n'+
                 self.t('These backups remain on the servers. Use Export encrypted .pcbackup to save an archive on this PC.','Эти копии остаются на серверах. Для сохранения архива на этом ПК используйте экспорт .pcbackup.'))
+        elif result['mode']=='cancel-add-workers':
+            self.message(self.t('Worker addition cancelled','Добавление Workers отменено'),self.t('The previous Worker roster has been restored. New Worker services and access were removed; their runtime files and logs were retained. Existing App and Workers were preserved.','Восстановлен предыдущий состав Workers. Службы и доступ новых Workers удалены; файлы и журналы сохранены. Существующие App и Workers сохранены.'))
         else:self.text_dialog(self.t('Operation complete','Операция завершена'),json.dumps(value,ensure_ascii=False,indent=2))
 
 

@@ -40,7 +40,6 @@ def plan(mode,install_ai=True,workers=None):
 class Engine:
     def __init__(self,c,vault,release,state_dir,log=print,remote_factory=Remote,diagnostics=None):
         self.c=validate(c,True); self.vault=vault; self.release=release
-        if release:validate_release_queues(c,release)
         validate_membership(c,vault.data)
         self.dir=Path(state_dir); self.dir.mkdir(parents=True,exist_ok=True)
         self.log=lambda message:log(english_log(message)); self.factory=remote_factory; self.remotes={}
@@ -48,7 +47,9 @@ class Engine:
         self.diagnostics=diagnostics
 
     def payload(self,role,operation,mode,include_files=True):
-        if self.release:validate_release_queues(self.c,self.release)
+        if (self.release and include_files and role.startswith('worker')
+                and mode in ('install','update','repair','worker-repair','add-workers')):
+            validate_release_queues({'hosts':{role:self.c['hosts'][role]}},self.release)
         secrets=self.vault.data.get('secrets',{}); tls=self.vault.data.get('tls',{})
         if role.startswith('worker'):
             n=f'{int(role[6:]):02}'
@@ -83,10 +84,10 @@ class Engine:
     def run(self,mode):
         self.reconnect_ai=False
         if mode not in ('check','status','install','update','repair','backup','app-tls','ai','healthcheck'): raise ValueError('Unknown operation')
-        if mode in ('install','update','repair','ai','healthcheck') and not self.release: raise ValueError('Select a verified release')
+        if mode in ('install','update','repair','ai') and not self.release: raise ValueError('Select a verified release')
         if mode in ('install','update','repair') and hasattr(self.release,'validate_worker_count'):
             self.release.validate_worker_count(len(worker_roles(self.c)))
-        if mode in ('install','update') and self.vault.data.get('directory') is not None:
+        if (mode=='install' or mode=='update' and not self.vault.data.get('deployment_components')) and self.vault.data.get('directory') is not None:
             if not self.release.doc.get('management',{}).get('directory_configuration'):
                 raise ValueError('LDAP configuration requires a release with the App directory configuration contract (v0.5.0 or later).')
         with file_lock(self.dir/'operation.lock'):
@@ -146,6 +147,9 @@ class Engine:
             elif mode=='backup' or (mode=='status' and self.vault.data.get('topology')):
                 if self.vault.data.get('topology')!=topology_hash(self.c): raise ValueError('Use the original site file and vault for this installation')
             if self.diagnostics:self.diagnostics.protect(self.vault.data)
+            if mode=='repair' and self.vault.data.get('deployment_components'):
+                from .component_updates import repair_components
+                return repair_components(self)
             if mode=='update' and getattr(self.release,'assets',None):
                 from .component_updates import selective_update
                 path=self.dir/'journal.json'
@@ -174,10 +178,14 @@ class Engine:
             self.log(tr('app: проверка SSH перед применением сертификата'))
             r.probe();r.prepare_stage()
             r.put_bytes('linux.py',(RESOURCES/'linux.py').read_bytes())
-            payload=self.payload('app',operation,'app-tls')
+            payload=self.payload('app',operation,'app-tls',include_files=False)
             status=r.action(payload,'preflight',RESOURCES)
             if not status.get('managed') or not status.get('version'):
                 raise ValueError(tr('Сначала завершите установку. При первой установке импортированный PFX применяется автоматически.'))
+            from .component_updates import recorded_components,verify_component
+            expected=recorded_components(self).get('app')
+            if expected:verify_component('app',status,expected,operation)
+            payload.update({k:status[k] for k in ('version','manifest') if k in status})
             journal={'operation':operation,'status':'running','url':self.vault.data['app_tls']['url']}
             atomic_json(path,journal)
             self.log(tr('app: установка сертификата и перезапуск веб-сервисов; возможна краткая недоступность сайта'))
@@ -396,7 +404,11 @@ class Engine:
                 if mode=='status' and not statuses[role].get('managed'):
                     result={'managed':False,'version':'','status':'not_installed_by_manager'}
                     self.log(tr('{v0}: установка Manager не найдена — доступен режим «Установить».').format(v0=role))
-                else:result=self.remotes[role].action(self.payload(role,operation,mode),action,RESOURCES)
+                else:
+                    payload=self.payload(role,operation,mode,include_files=mutating)
+                    if not mutating and statuses[role].get('managed'):
+                        payload.update({k:statuses[role][k] for k in ('version','manifest')})
+                    result=self.remotes[role].action(payload,action,RESOURCES)
                 event={'time':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'role':role,'action':action,'result':result}
                 self.report.append(event)
                 if mutating:
@@ -494,7 +506,9 @@ class Engine:
             status=remote.action(self.payload('ai',operation,'check'),'preflight',RESOURCES)
             if not mutating:
                 if mode=='check':return {'status':'checked'}
-                result=remote.action(self.payload('ai',operation,mode),mode,RESOURCES) if status.get('managed') else {'managed':False,'status':'not_installed_by_manager'}
+                read_payload=self.payload('ai',operation,mode,include_files=False)
+                if status.get('managed'):read_payload.update({k:status[k] for k in ('version','manifest')})
+                result=remote.action(read_payload,mode,RESOURCES) if status.get('managed') else {'managed':False,'status':'not_installed_by_manager'}
                 self.report.append({'role':'ai','action':mode,'result':result})
                 return {'status':'complete' if status.get('managed') else 'not_installed','result':result}
             if status.get('version') and status['version'] not in self.release.allowed_from+[self.release.version]:raise ValueError('AI: unsupported upgrade source')

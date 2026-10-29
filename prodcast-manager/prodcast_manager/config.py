@@ -40,6 +40,12 @@ def fresh_site():
     return value
 
 
+def validate_execution_queues(role,host):
+    if 'execution_queues' not in host:return
+    if not role.startswith('worker'):raise ValueError('Queue selection is only supported for Workers')
+    execution_queues(host)
+
+
 def validate(c, require_trust=False):
     if not isinstance(c.get('install_ai',True),bool): raise ValueError('install_ai must be boolean')
     if c.get('schema') != 1: raise ValueError('Unsupported site schema')
@@ -51,8 +57,7 @@ def validate(c, require_trust=False):
         raise ValueError('Configure App, DB, optional AI and 1 to 16 Workers with stable IDs from 1 to 16')
     addresses=[]
     for role,h in c['hosts'].items():
-        if role.startswith('worker'):execution_queues(h)
-        elif 'execution_queues' in h:raise ValueError('Queue selection is only supported for Workers')
+        validate_execution_queues(role,h)
         if role=='ai' and not c.get('install_ai',True):continue
         ip=ipaddress.IPv4Address(h['address'])
         if ip.is_loopback or ip.is_multicast or ip.is_unspecified: raise ValueError(f'{role}: invalid VM IP')
