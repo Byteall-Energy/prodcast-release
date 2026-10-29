@@ -911,6 +911,15 @@ def app_python(code,current=False):
     fn=current_dc if current else dc
     return fn('app','run','--rm','--no-deps','-T','--pull','never','--entrypoint','python','admin-service','-',input=code)
 
+def worker_queue_map(roles=None):
+    result={}
+    for role in worker_roles() if roles is None else roles:
+        queues=C['hosts'][role].get('execution_queues',['workflows','workflows_data','scenarios'])
+        if not isinstance(queues,list) or not queues or any(q not in ('workflows','workflows_data','scenarios') for q in queues) or len(set(queues))!=len(queues):
+            raise RuntimeError('Invalid Worker queues')
+        result['prodcast-worker-'+f'{int(role[6:]):02}'+'@']=queues
+    return result
+
 def verify():
     code="""import os,requests,psycopg2,redis
 from mainapp.celery import app
@@ -920,13 +929,13 @@ with psycopg2.connect(os.environ['DATABASE_URL'],connect_timeout=10) as c:
 assert redis.Redis.from_url(os.environ['CELERY_BROKER_URL']).ping()
 r=requests.get(os.environ['LICENSE_SERVICE_URL'],params={'tenant_id':os.environ['LICENSE_TENANT_ID']},headers={'Authorization':'Bearer '+os.environ['LICENSE_SERVICE_TOKEN']},timeout=15);r.raise_for_status();assert r.json()['status']=='active', 'License inactive'
 nodes=app.control.inspect(timeout=15).active_queues() or {}
-for prefix in WORKER_PREFIXES:
+for prefix,expected in WORKER_QUEUES.items():
  matches=[q for n,q in nodes.items() if n.startswith(prefix)]
  assert len(matches)==1, 'Worker absent/duplicate'
- assert {'workflows','workflows_data','scenarios'} <= {q['name'] for q in matches[0]}
+ assert set(expected) == {q['name'] for q in matches[0]}, 'Worker queue subscriptions mismatch'
 assert any(any(q['name']=='default' for q in qs) for qs in nodes.values())
 """
-    code=code.replace('WORKER_PREFIXES',repr(tuple('prodcast-worker-'+n+'@' for n in worker_numbers())))
+    code=code.replace('WORKER_QUEUES',repr(worker_queue_map()))
     if P.get('external_activation'):
         code='\n'.join(line for line in code.splitlines() if not line.startswith("r=requests.get(os.environ['LICENSE_SERVICE_URL']"))
         code+='\nimport os,django\nos.environ.setdefault("DJANGO_SETTINGS_MODULE","mainapp.settings")\ndjango.setup()\nfrom apiapp.domains.identity.license_guard import get_license_constraints\na=get_license_constraints()\nassert a.enabled and a.allow_login, "App activation is invalid or unavailable"\n'
@@ -1112,21 +1121,33 @@ def selected_worker_consumers(resume=False):
     roles=P.get('changed_workers',[])
     if not roles or any(not re.fullmatch(r'worker(?:[1-9]|1[0-6])',r) or r not in C['hosts'] for r in roles):
         raise RuntimeError('Invalid selected Worker drain scope')
-    code="""import time
+    code="""import time,json
 from mainapp.celery import app
-prefixes=PREFIXES
-queues=('workflows','workflows_data','scenarios')
+expected=EXPECTED
 nodes=app.control.inspect(timeout=15).active_queues() or {}
 selected=[]
-for prefix in prefixes:
+original={}
+for prefix in expected:
  matches=[name for name in nodes if name.startswith(prefix)]
  assert len(matches)==1, 'Selected Worker absent/duplicate'
- selected.append(matches[0])
-def consumers(resume):
- for node in selected:
-  for queue in queues:
-   result=app.control.broadcast('add_consumer' if resume else 'cancel_consumer',arguments={'queue':queue},destination=[node],reply=True,timeout=15)
-   assert any('ok' in item.get(node,{}) for item in result), 'Worker consumer control not confirmed'
+ node=matches[0];selected.append(node)
+ original[node]=[q['name'] for q in nodes[node]]
+
+def change(node,queue,resume):
+ result=app.control.broadcast('add_consumer' if resume else 'cancel_consumer',arguments={'queue':queue},destination=[node],reply=True,timeout=15)
+ assert any('ok' in item.get(node,{}) for item in result), 'Worker consumer control not confirmed'
+
+def consumers(resume,rollback=False):
+ for prefix,node in zip(expected,selected):
+  if rollback:
+   for queue in original[node]:change(node,queue,True)
+  elif resume:
+   for queue in original[node]:
+    if queue not in expected[prefix]:change(node,queue,False)
+   for queue in expected[prefix]:change(node,queue,True)
+  else:
+   for queue in original[node]:change(node,queue,False)
+
 if RESUME:
  consumers(True)
 else:
@@ -1140,12 +1161,20 @@ else:
    time.sleep(5)
   else:raise RuntimeError('Selected Worker jobs have not drained; no jobs were discarded')
  except Exception:
-  consumers(True)
+  consumers(True,rollback=True)
   raise
+print(json.dumps({prefix:original[node] for prefix,node in zip(expected,selected)}))
 """
-    code=code.replace('PREFIXES',repr(tuple('prodcast-worker-'+f'{int(r[6:]):02}'+'@' for r in roles))).replace('RESUME',repr(resume))
-    app_python(code,True)
-    return {'selected_workers':roles,'consumers_resumed':resume,'app_restarted':False}
+    expected=worker_queue_map(roles)
+    restored=P.get('resume_queues')
+    if restored is not None:
+        if not resume or set(restored)!=set(expected) or any(not isinstance(q,list) or any(x not in ('workflows','workflows_data','scenarios') for x in q) for q in restored.values()):
+            raise RuntimeError('Invalid Worker resume queues')
+        expected=restored
+    code=code.replace('EXPECTED',repr(expected)).replace('RESUME',repr(resume))
+    output=app_python(code,True)
+    previous=json.loads(output.strip().splitlines()[-1]) if output else {}
+    return {'selected_workers':roles,'consumers_resumed':resume,'app_restarted':False,'previous_queues':previous}
 
 def backup():
     folder=STATE/'backups'/P['operation']; folder.mkdir(parents=True,exist_ok=True); folder.chmod(0o700)

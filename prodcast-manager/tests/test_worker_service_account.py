@@ -55,11 +55,12 @@ param([string]$Source)
 $ErrorActionPreference='Stop';$tokens=$null;$errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
-foreach($name in @('Resolve-ServiceIdentity','Test-ExistingWorker')){
+foreach($name in @('Resolve-ServiceIdentity','Test-WorkerQueues','Test-ExistingWorker')){
  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
  . ([scriptblock]::Create($fn.Extent.Text))
 }
 $service='ProdCastWorker01';$number='01';$executionMode='windows-appcontainer'
+$executionQueues=@('workflows','workflows_data','scenarios')
 $p=[pscustomobject]@{operation='original';version='v0.6.6';manifest='expected';secrets=@{};site=@{hosts=@{db=@{address='192.0.2.1'}}}}
 $script:state=[pscustomobject]@{operation='original';version='';manifest='';install_root='';pending_root='C:\ProdCast\Managed\v0.6.6-owned';steps=[pscustomobject]@{}}
 $script:svc=[pscustomobject]@{State='Running';StartName='EXAMPLE\approved';PathName='C:\ProdCast\Managed\v0.6.6-owned\ProdCastWorker01.exe'}
@@ -71,7 +72,7 @@ function ConvertTo-SecureString {param($String,[switch]$AsPlainText,[switch]$For
 function Test-Path {param($LiteralPath,$PathType) return $true}
 function Get-Content {param([switch]$Raw,$LiteralPath)
  if($LiteralPath.EndsWith('site.json')){return '{"worker_number":"01","postgres_host":"192.0.2.1"}'}
- return '{"mode":"windows-appcontainer","postgres_tls":true}'
+ return '{"mode":"windows-appcontainer","postgres_tls":true,"queues":["workflows","workflows_data","scenarios"]}'
 }
 $identity=Resolve-ServiceIdentity $true
 if($identity.account -ne 'EXAMPLE\approved' -or $identity.credential){throw 'Existing account was not preserved'}

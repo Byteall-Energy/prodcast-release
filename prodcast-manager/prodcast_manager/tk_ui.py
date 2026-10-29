@@ -412,6 +412,24 @@ class DesktopWindow:
         self.button(form,'Retrieve SSH fingerprint…','Получить SSH-отпечаток…',lambda:self.start('scan_server',{'role':self.role}))
         self.button(form,'Test selected server','Проверить выбранный сервер',lambda:self.start('check_server',{'role':self.role}))
         if self.role.startswith('worker'):
+            from .worker_queues import QUEUES, execution_queues
+            form=self.group('Processed tasks · '+self.role,'Обрабатываемые задачи · '+self.role)
+            selected=set(execution_queues(host))
+            for queue,label in zip(QUEUES,('Model-driven','Data-driven','Forecast')):
+                var=tk.BooleanVar(master=self.root,value=queue in selected)
+                def toggle(q=queue,v=var,h=host):
+                    values=set(execution_queues(h))
+                    if v.get():values.add(q)
+                    else:values.discard(q)
+                    if not values:
+                        v.set(True)
+                        messagebox.showinfo(self.t('Worker queues','Очереди Worker'),self.t('Select at least one task type.','Выберите хотя бы один тип задач.'),parent=self.root)
+                        return
+                    self.edited(h,'execution_queues',[item for item in QUEUES if item in values])
+                button=ttk.Checkbutton(form,text=label,variable=var,command=toggle)
+                button._value=var;form.addRow(button);self.fields['queue_'+queue]=button
+                self.mutable.append((button,'normal'));button.configure(state='disabled' if self.state['busy'] else 'normal')
+            self.note('Saved with this Worker profile. Applied during installation, update or Worker repair. Forecast means scenario runs.','Сохраняется в профиле этого Worker. Применяется при установке, обновлении или восстановлении Worker. Forecast — выполнение сценариев.')
             account=self.worker_services.setdefault(self.role,{'mode':'preserve','account':''})
             form=self.group('Worker Windows service account (not SSH)','Учётная запись службы Worker (не SSH)')
             self.combo(form,'Service logon','Вход службы',account,'mode',[('preserve',self.t('Preserve existing; managed account for a new service','Сохранить существующую; управляемая для новой службы')),('custom',self.t('Dedicated local/domain service account','Выделенная локальная/доменная учётная запись')),('managed',self.t('Explicitly use local prodcast-managed','Явно использовать локальную prodcast-managed'))],True)

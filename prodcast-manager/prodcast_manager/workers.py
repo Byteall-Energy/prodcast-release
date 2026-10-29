@@ -34,6 +34,10 @@ def candidate(original, proposed):
     for role,host in original['hosts'].items():
         if host['address']!=proposed['hosts'][role]['address']:
             raise ValueError('Existing server addresses must not change when adding Workers')
+    from .worker_queues import execution_queues
+    for role in old:
+        if execution_queues(original['hosts'][role])!=execution_queues(proposed['hosts'][role]):
+            raise ValueError('Update existing Worker queues separately before adding Workers')
     ignored={'hosts','_worker_topology_hosts'}
     if {k:v for k,v in original.items() if k not in ignored}!={k:v for k,v in proposed.items() if k not in ignored}:
         raise ValueError('Keep the original site settings when adding Workers')
@@ -50,6 +54,9 @@ def binding(config):
     # SSH credentials can be corrected on retry; the planned installation cannot.
     value={k:v for k,v in config.items() if k!='hosts'}
     value['hosts']={r:h['address'] for r,h in config['hosts'].items()}
+    from .worker_queues import subscriptions, QUEUES
+    selected={r:q for r,q in subscriptions(config).items() if q!=list(QUEUES)}
+    if selected:value['worker_queues']=selected
     return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
 
 

@@ -170,11 +170,16 @@ $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
-foreach($name in @('Test-WorkerRuntime','Repair-Worker')){
+foreach($name in @('Test-WorkerRuntime','Test-WorkerQueues','Repair-Worker')){
     $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
     . ([scriptblock]::Create($fn.Extent.Text))
 }
 $service='ProdCastWorker01';$script:state=[pscustomobject]@{install_root='C:\ProdCast\Managed\owned'}
+$executionQueues=@('workflows','workflows_data','scenarios')
+function Get-Content {param([switch]$Raw,$LiteralPath)
+ if($LiteralPath.EndsWith('site.json')){return '{}'}
+ return '{"queues":["workflows","workflows_data","scenarios"]}'
+}
 $script:calls=0;$script:missing=$false
 function Test-Path {param($LiteralPath,$PathType) return !$script:missing}
 function Get-CimInstance {param($ClassName,$Filter) return $script:svc}

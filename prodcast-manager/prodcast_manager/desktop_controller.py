@@ -164,10 +164,13 @@ class DesktopController:
         # No password/key material may enter the public profile or draft.
         if set(value) - set(self.config): raise ValueError('Unknown profile fields')
         if not isinstance(value.get('hosts'),dict): raise ValueError('Invalid hosts')
-        allowed = {'address','port','username','auth','key_path','fingerprint'}
+        from .worker_queues import execution_queues
+        allowed = {'address','port','username','auth','key_path','fingerprint','execution_queues'}
         for role, host in value['hosts'].items():
             if role not in ('app','db','ai') and not re.fullmatch(r'worker(?:[1-9]|1[0-6])',role): raise ValueError('Invalid role')
             if not isinstance(host,dict) or set(host) - allowed: raise ValueError('Secrets belong in encrypted access storage')
+            if role.startswith('worker'):execution_queues(host)
+            elif 'execution_queues' in host:raise ValueError('Queue selection is only supported for Workers')
             host['port'] = int(host.get('port',22) or 22)
         reconciled=self._reconcile_removed_workers(value,payload.get('membership_stamp',self.membership_stamp))
         self.config = value
@@ -440,7 +443,7 @@ class DesktopController:
         if mode != 'worker-remove' and not packages['release']: raise ValueError('Select the exact installed complete release')
         def run():
             release = Release(packages['release'],directory / 'cache',packages['trusted'],validate_ai=False) if mode != 'worker-remove' else None
-            saved = add_workers(directory,target,vault,release,self.emit,diagnostics=self.log) if mode == 'add-workers' else run_worker_action(directory,role,mode,vault,release,self.emit,diagnostics=self.log)
+            saved = add_workers(directory,target,vault,release,self.emit,diagnostics=self.log) if mode == 'add-workers' else run_worker_action(directory,role,mode,vault,release,self.emit,diagnostics=self.log,selected_queues=target['hosts'][role].get('execution_queues') if mode=='worker-repair' else None)
             (directory / 'ui-draft.json').unlink(missing_ok=True)
             with self.lock:
                 self.config = saved; self.dirty = False;self.membership_stamp=self._membership_stamp()

@@ -16,6 +16,10 @@ def fingerprint(engine,role):
         if service and service.get('mode')=='preserve':service=None
         settings=dict(database=engine.c['hosts']['db']['address'],app_url=engine.c['public_url'],
                       policy=payload['worker_execution_policy'],service=service)
+        from .worker_queues import execution_queues, QUEUES
+        queues=execution_queues(engine.c['hosts'][role])
+        # Keep legacy all-queue receipts stable.
+        if queues != list(QUEUES):settings['execution_queues']=queues
     elif role=='app':
         settings=dict(site={k:v for k,v in engine.c.items() if k!='hosts'},
                       hosts={r:h['address'] for r,h in engine.c['hosts'].items()},
@@ -192,7 +196,7 @@ def selective_update(e):
         e.log('Preflight-only retry: accepted corrected settings; repeating all checks before applying update steps.')
     e.log('Update scope: '+(', '.join(changed) or 'no core component changes'))
     e.log('Unchanged service groups are not stopped, reinstalled, reconfigured or committed.')
-    statuses={};consumers_drained=False
+    statuses={};consumers_drained=False;previous_queues={};installed_workers=set()
     try:
         for role in core_roles(e.c):
             owner.connect(role)
@@ -223,7 +227,9 @@ def selective_update(e):
             journal.update(status='running',phase='applying',inflight={'role':role,'action':action});atomic_json(path,journal)
             e.log(role+': '+action)
             result=owner.remotes[role].action(p,action,RESOURCES)
-            if action=='drain-workers':consumers_drained=True
+            if action=='drain-workers':
+                consumers_drained=True;previous_queues=result.get('previous_queues',{})
+            if action=='install' and role.startswith('worker'):installed_workers.add(role)
             elif action=='resume-workers':consumers_drained=False
             journal['steps'].append(dict(role=role,action=action,result=result));journal.pop('inflight',None);atomic_json(path,journal)
         save_receipt(e,changed,baseline['roles'])
@@ -237,6 +243,12 @@ def selective_update(e):
             try:
                 p=e.payload('app',operation,'component-check');p.update(version=baseline['roles']['app']['version'],manifest=baseline['roles']['app']['manifest'])
                 p['changed_workers']=[r for r in changed if r.startswith('worker')]
+                if previous_queues:
+                    from .worker_queues import execution_queues
+                    p['resume_queues']={
+                        'prodcast-worker-'+f'{int(r[6:]):02}'+'@':
+                        execution_queues(e.c['hosts'][r]) if r in installed_workers else previous_queues['prodcast-worker-'+f'{int(r[6:]):02}'+'@']
+                        for r in p['changed_workers']}
                 owner.remotes['app'].action(p,'resume-workers',RESOURCES)
             except Exception:e.log('Selected Worker consumers could not be restored; keep the journal and resume the same component update. App services were not restarted.')
         raise

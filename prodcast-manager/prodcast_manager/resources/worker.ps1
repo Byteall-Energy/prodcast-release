@@ -18,6 +18,19 @@ if($p.worker_execution_policy){
     $executionMode='windows-account'
 }
 
+$executionQueues=@('workflows','workflows_data','scenarios')
+$workerHost=$p.site.hosts.($p.role)
+if($workerHost.PSObject.Properties['execution_queues']){
+    $value=$workerHost.execution_queues
+    if($value -isnot [Array] -or $value.Count -eq 0 -or @($value | Where-Object {$_ -cnotin @('workflows','workflows_data','scenarios')}).Count -or @($value | Select-Object -Unique).Count -ne $value.Count){throw 'Invalid Worker execution_queues'}
+    $executionQueues=@($value)
+}
+function Test-WorkerQueues($siteConfig,$marker) {
+    $configured=@('workflows','workflows_data','scenarios')
+    if($siteConfig.PSObject.Properties['execution_queues']){$configured=@($siteConfig.execution_queues)}
+    $expected=($executionQueues | Sort-Object) -join ','
+    return (($configured | Sort-Object) -join ',') -ceq $expected -and ((@($marker.queues) | Sort-Object) -join ',') -ceq $expected
+}
 function Save-State {
     $tmp=$stateFile+'.tmp'
     [IO.File]::WriteAllText($tmp,($script:state | ConvertTo-Json -Depth 30),(New-Object Text.UTF8Encoding($false)))
@@ -322,6 +335,7 @@ function Install-Worker {
         $site.workflow_model_queue='workflows'
         $site.workflow_data_queue='workflows_data'
     }
+    $site.execution_queues=@($executionQueues)
     $site | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installDir 'site.json') -Encoding UTF8
     foreach($name in @('prodcast-db-ca.crt','prodcast-app-ca.crt')){[IO.File]::WriteAllText((Join-Path $installDir $name),$p.tls.'ca.crt')}
     Add-Type -AssemblyName System.Security
@@ -338,6 +352,7 @@ function Install-Worker {
     Set-Field $script:state 'worker_start' @{operation=$p.operation;path=$installDir}
     Save-State
     $marker=Start-InstalledWorker $package $installDir
+    if(!(Test-WorkerQueues ([pscustomobject]$site) $marker)){throw 'Worker queue readiness mismatch'}
     Restore-WorkerStartup
     Set-Field $script:state 'previous_root' $script:state.install_root
     Set-Field $script:state 'install_root' $installDir
@@ -368,7 +383,12 @@ function Wait-WorkerMaintenanceReady([int]$timeoutSeconds=120) {
     throw ('Worker failed its runtime check after restart; readiness was not reached within '+$timeoutSeconds+' seconds. Inspect the Worker logs and service state.')
 }
 function Repair-Worker {
-    if(Test-WorkerRuntime){return @{service=$service;preserved=$true}}
+    if(Test-WorkerRuntime){
+        $siteConfig=Get-Content -Raw -LiteralPath (Join-Path $script:state.install_root 'site.json') | ConvertFrom-Json
+        $marker=Get-Content -Raw -LiteralPath (Join-Path $script:state.install_root 'logs\scheduler-service-ready.json') | ConvertFrom-Json
+        if(!(Test-WorkerQueues $siteConfig $marker)){throw 'Worker queues differ; use Update or selected Worker repair to apply the saved queues'}
+        return @{service=$service;preserved=$true}
+    }
     $svc=Get-CimInstance Win32_Service -Filter "Name='$service'"
     if($svc){
         if(!$script:state.install_root -or !$svc.PathName.Contains($script:state.install_root)){throw 'Refusing to replace an unowned service'}
@@ -395,6 +415,7 @@ function Test-ExistingWorker {
     $siteConfig=Get-Content -Raw -LiteralPath (Join-Path $candidate 'site.json') | ConvertFrom-Json
     $marker=Get-Content -Raw -LiteralPath (Join-Path $candidate 'logs\scheduler-service-ready.json') | ConvertFrom-Json
     if($siteConfig.worker_number -ne $number -or $siteConfig.postgres_host -ne $p.site.hosts.db.address -or $marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker identity/isolation/TLS readiness mismatch'}
+    if(!(Test-WorkerQueues $siteConfig $marker)){throw 'Worker queue readiness mismatch'}
     return @{healthy=$true;service=$service;account=$registration.StartName;path=$candidate;postgres_tls=$true;services_restarted=$false}
 }
 function Get-WorkerProcesses($registration) {
@@ -583,6 +604,8 @@ function Dispatch {
             if(!(Test-WorkerRuntime)){throw 'Worker service readiness failed'}
             $marker=Get-Content -Raw -LiteralPath (Join-Path $script:state.install_root 'logs\scheduler-service-ready.json') | ConvertFrom-Json
             if($marker.mode -ne $executionMode -or !$marker.postgres_tls){throw 'Worker isolation/TLS readiness failed'}
+            $siteConfig=Get-Content -Raw -LiteralPath (Join-Path $script:state.install_root 'site.json') | ConvertFrom-Json
+            if(!(Test-WorkerQueues $siteConfig $marker)){throw 'Worker queue readiness mismatch'}
             return @{healthy=$true;service=$service;postgres_tls=$true}
         }
         'repair' {

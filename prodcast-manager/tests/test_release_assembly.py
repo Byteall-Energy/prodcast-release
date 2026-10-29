@@ -173,3 +173,28 @@ def test_legacy_agent_installer_is_rejected(tmp_path, agent_prefix):
     manager.write_bytes(b"manager")
     with pytest.raises(ValueError, match="exactly one versioned portable EXE"):
         build(VERSION, base(tmp_path), payloads, manager, snapshot(tmp_path), tmp_path / "out")
+
+
+@pytest.mark.parametrize('capability',[{'schema':1},{'schema':True},{'schema':2}])
+def test_worker_queue_capability_is_bound_to_built_payload(tmp_path,capability,monkeypatch):
+    monkeypatch.setitem(globals(),'VERSION','v0.6.7')
+    payloads=inputs(tmp_path);path=payloads['worker']/'release-manifest.json'
+    data=json.loads(path.read_text());data['worker_queue_selection']=capability
+    write_json(path,data);checksum(payloads['worker'])
+    manager=tmp_path/'manager.exe';manager.write_bytes(b'manager')
+    if type(capability['schema']) is not int or capability['schema']!=1:
+        with pytest.raises(ValueError,match='queue selection'):build(VERSION,base(tmp_path),payloads,manager,snapshot(tmp_path),tmp_path/'out')
+    else:
+        assets=build(VERSION,base(tmp_path),payloads,manager,snapshot(tmp_path),tmp_path/'out')
+        doc=json.loads(assets['manifest'].read_text())
+        assert doc['management']['worker_queue_selection']==capability
+        assert doc['management']['minimum_manager']=='0.6.7'
+
+
+def test_queue_capability_cannot_ship_with_an_older_manager(tmp_path):
+    payloads=inputs(tmp_path);path=payloads['worker']/'release-manifest.json'
+    data=json.loads(path.read_text());data['worker_queue_selection']={'schema':1}
+    write_json(path,data);checksum(payloads['worker'])
+    manager=tmp_path/'manager.exe';manager.write_bytes(b'manager')
+    with pytest.raises(ValueError,match='0.6.7'):
+        build(VERSION,base(tmp_path),payloads,manager,snapshot(tmp_path),tmp_path/'out')

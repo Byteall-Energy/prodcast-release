@@ -53,7 +53,7 @@ def test_unapplied_release_cannot_be_declared_complete(agent,monkeypatch):
 def test_consumer_control_targets_only_selected_worker(agent,monkeypatch,resume):
     calls=[];selected='prodcast-worker-01@host';other='prodcast-worker-02@host'
     class Inspect:
-        def active_queues(self):return {selected:[],other:[]}
+        def active_queues(self):return {selected:[] if resume else [{'name':q} for q in ('workflows','workflows_data','scenarios')],other:[]}
         def active(self):return {selected:[]}
         reserved=active;scheduled=active
     class Control:

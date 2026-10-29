@@ -9,6 +9,7 @@ from .release import sha
 from .certificates import upgrade_legacy_certificates
 from .app_certificate import validate_for_site
 from .worker_policy import worker_execution_policy
+from .worker_queues import subscriptions, validate_release_queues
 from .directory import app_directory
 from .operation_history import journal_blocks_changes
 
@@ -39,6 +40,7 @@ def plan(mode,install_ai=True,workers=None):
 class Engine:
     def __init__(self,c,vault,release,state_dir,log=print,remote_factory=Remote,diagnostics=None):
         self.c=validate(c,True); self.vault=vault; self.release=release
+        if release:validate_release_queues(c,release)
         validate_membership(c,vault.data)
         self.dir=Path(state_dir); self.dir.mkdir(parents=True,exist_ok=True)
         self.log=lambda message:log(english_log(message)); self.factory=remote_factory; self.remotes={}
@@ -46,6 +48,7 @@ class Engine:
         self.diagnostics=diagnostics
 
     def payload(self,role,operation,mode,include_files=True):
+        if self.release:validate_release_queues(self.c,self.release)
         secrets=self.vault.data.get('secrets',{}); tls=self.vault.data.get('tls',{})
         if role.startswith('worker'):
             n=f'{int(role[6:]):02}'
@@ -287,6 +290,10 @@ class Engine:
         digest=self.release.digest if self.release else ''
         same_failed_release=(journal.get('status')=='failed' and journal.get('manifest')==digest)
         pending=journal.get('status')=='running' or same_failed_release
+        if mutating and pending and (journal.get('phase')=='applying' or journal.get('steps') or journal.get('inflight')):
+            from .worker_queues import QUEUES
+            expected=journal.get('worker_queues',{r:list(QUEUES) for r in worker_roles(self.c)})
+            if subscriptions(self.c)!=expected:raise ValueError('Finish the interrupted operation before changing Worker queues')
         if mutating and pending and journal.get('phase')=='applying' and 'ai_address' in journal:
             if (journal.get('install_ai'),journal['ai_address'])!=(self.c.get('install_ai',True),self.c['hosts']['ai']['address']):
                 raise ValueError('Finish the interrupted operation before changing AI settings.')
@@ -316,6 +323,7 @@ class Engine:
                 if old_inflight.get('role')=='ai':legacy_ai['inflight']=old_inflight['action']
                 atomic_json(ai_path,legacy_ai)
             journal=dict(journal if pending else {},operation=operation,mode=mode,manifest=digest,status='running',steps=journal.get('steps',[]) if pending else [],phase=journal.get('phase','unknown') if pending else 'preflight',install_ai=self.c.get('install_ai',True),ai_address=self.c['hosts']['ai']['address'])
+            journal['worker_queues']=subscriptions(self.c)
             atomic_json(path,journal)
         preflight_complete=False
         applying=False

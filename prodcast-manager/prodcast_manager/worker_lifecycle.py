@@ -30,7 +30,7 @@ def removal_target(config, role):
 
 
 def run_worker_action(directory, role, mode, vault, release=None, log=print,
-                      remote_factory=None, diagnostics=None):
+                      remote_factory=None, diagnostics=None, selected_queues=None):
     from .engine import Engine, RESOURCES
     if mode not in ('worker-repair', 'worker-remove'):
         raise ValueError('Unknown Worker action')
@@ -71,12 +71,21 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
             journal = dict(operation=uuid.uuid4().hex, role=role, mode=mode,
                            installation_id=vault.data['installation_id'], original=current,
                            target=target, steps=[], status='running')
+        if mode == 'worker-repair' and selected_queues is not None:
+            from .worker_queues import execution_queues
+            queues=execution_queues({'execution_queues':selected_queues})
+            if pending and execution_queues(journal['target']['hosts'][role])!=queues:
+                raise ValueError('Resume Worker repair with its original queues')
+            journal['target']['hosts'][role]['execution_queues']=queues
         if mode == 'worker-repair' and release is None:
             raise ValueError('Select the exact installed release for Worker repair')
         if pending and mode == 'worker-repair' and journal.get('manifest') != release.digest:
             raise ValueError('Resume Worker repair with the original release')
         if release:
             journal['manifest'] = release.digest
+        if mode == 'worker-repair':
+            from .worker_queues import validate_release_queues
+            validate_release_queues(journal['target'],release)
         # Back up encrypted local metadata before the first remote mutation.
         if not pending:
             import shutil
@@ -92,7 +101,7 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
         atomic_json(path, journal)
         options = {'remote_factory': remote_factory} if remote_factory else {}
         engine = Engine(current, vault, release, directory, log, diagnostics=diagnostics, **options)
-        engine.c = journal['original']
+        engine.c = journal['target'] if mode == 'worker-repair' else journal['original']
         operation = journal['operation']
         selected = ('app', role) if mode == 'worker-repair' else ('app', 'db', role)
 
@@ -148,6 +157,10 @@ def run_worker_action(directory, role, mode, vault, release=None, log=print,
                 if not action(role, 'verify').get('healthy'):
                     raise RuntimeError(role + ': Worker readiness failed')
                 step(role, 'commit')
+                save_config(directory, journal['target'])
+                if vault.data.get('deployment_components'):
+                    from .component_updates import save_receipt
+                    save_receipt(engine,[role],vault.data['deployment_components']['roles'])
             else:
                 step('db', 'worker-retire-access')
                 step(role, 'worker-retire')

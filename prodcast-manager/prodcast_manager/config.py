@@ -1,5 +1,6 @@
 """The topology is deliberately narrower than arbitrary remote execution."""
 from .i18n import tr
+from .worker_queues import execution_queues
 import hashlib
 import ipaddress
 import json
@@ -50,6 +51,8 @@ def validate(c, require_trust=False):
         raise ValueError('Configure App, DB, optional AI and 1 to 16 Workers with stable IDs from 1 to 16')
     addresses=[]
     for role,h in c['hosts'].items():
+        if role.startswith('worker'):execution_queues(h)
+        elif 'execution_queues' in h:raise ValueError('Queue selection is only supported for Workers')
         if role=='ai' and not c.get('install_ai',True):continue
         ip=ipaddress.IPv4Address(h['address'])
         if ip.is_loopback or ip.is_multicast or ip.is_unspecified: raise ValueError(f'{role}: invalid VM IP')

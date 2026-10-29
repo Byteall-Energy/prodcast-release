@@ -247,3 +247,23 @@ def test_frozen_dependency_guard_requires_tk_and_rejects_qt():
     module.verify_archive(['_tkinter.pyd','tcl86t.dll','tk86t.dll'])
     with pytest.raises(RuntimeError):module.verify_archive(['_tkinter.pyd','PySide6/Qt6Core.dll'])
     with pytest.raises(RuntimeError):module.verify_archive(['python311.dll'])
+
+
+def test_worker_queue_controls_are_independent_and_persist(window,monkeypatch):
+    from prodcast_manager.tk_ui import messagebox
+    from prodcast_manager.worker_queues import QUEUES
+    info=Mock();monkeypatch.setattr(messagebox,'showinfo',info)
+    window.role='worker1';window.navigate('servers')
+    window.fields['queue_workflows'].invoke();window.fields['queue_workflows_data'].invoke()
+    assert window.config['hosts']['worker1']['execution_queues']==['scenarios']
+    window.fields['queue_scenarios'].invoke();info.assert_called_once()
+    assert window.fields['queue_scenarios']._value.get()
+    window.role='worker2';window.render()
+    assert all(window.fields['queue_'+q]._value.get() for q in QUEUES)
+    window.fields['queue_scenarios'].invoke()
+    window.sync();window.controller.save_draft()
+    reopened=DesktopController(window.controller.home)
+    assert reopened.config['hosts']['worker1']['execution_queues']==['scenarios']
+    assert reopened.config['hosts']['worker2']['execution_queues']==['workflows','workflows_data']
+    window.role='app';window.render()
+    assert not any('queue_'+q in window.fields for q in QUEUES)

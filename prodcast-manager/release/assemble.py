@@ -195,6 +195,15 @@ def build(version: str, base_archive: Path, payloads: dict[str, Path], manager_e
                     raise ValueError("Unsupported Worker execution policy")
                 management["worker_execution_policy"] = copy.deepcopy(policy)
                 management["minimum_manager"] = "0.6.4"
+            management.pop("worker_queue_selection", None)
+            capability = build_manifest.get("worker_queue_selection")
+            if capability is not None:
+                if capability != {"schema": 1} or type(capability.get("schema")) is not int:
+                    raise ValueError("Unsupported Worker queue selection contract")
+                if tuple(map(int, target.removeprefix("v").split("."))) < (0, 6, 7):
+                    raise ValueError("Worker queue selection requires release/Manager 0.6.7 or newer")
+                management["worker_queue_selection"] = copy.deepcopy(capability)
+                management["minimum_manager"] = "0.6.7"
         artifact_names = [item["name"] for item in build_manifest["artifacts"]]
         mapping: dict[str, str] = {}
         if component == "agent":

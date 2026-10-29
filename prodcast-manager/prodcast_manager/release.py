@@ -68,7 +68,7 @@ class Release:
         if self.digest!=PIN_V02:
             if not trusted_manifest or self.digest!=trusted_manifest.lower(): raise ValueError('Unknown release: supply publisher-verified manifest SHA256')
             m=self.doc.get('management',{})
-            if (m.get('profile'),m.get('schema'),m.get('minimum_manager')) not in ((PROFILE,1,'0.1.0'),('prodcast-five-vm-v2',2,'0.2.0'),(OFFLINE_PROFILE,3,'0.3.0'),(OFFLINE_PROFILE,3,'0.3.1'),(OFFLINE_PROFILE,3,'0.3.2'),(OFFLINE_PROFILE,3,'0.4.0'),(OFFLINE_PROFILE,3,'0.6.4')) or m.get('python')!='3.14.7' or m.get('database_major')!=18:
+            if (m.get('profile'),m.get('schema'),m.get('minimum_manager')) not in ((PROFILE,1,'0.1.0'),('prodcast-five-vm-v2',2,'0.2.0'),(OFFLINE_PROFILE,3,'0.3.0'),(OFFLINE_PROFILE,3,'0.3.1'),(OFFLINE_PROFILE,3,'0.3.2'),(OFFLINE_PROFILE,3,'0.4.0'),(OFFLINE_PROFILE,3,'0.6.4'),(OFFLINE_PROFILE,3,'0.6.7')) or m.get('python')!='3.14.7' or m.get('database_major')!=18:
                 raise ValueError('Release needs a newer manager/adapter')
             if m.get('migration_policy')!='forward-only' or not isinstance(m.get('upgrade_from'),list): raise ValueError('Missing upgrade contract')
         elif self.version!='v0.2': raise ValueError('Invalid pinned release')
