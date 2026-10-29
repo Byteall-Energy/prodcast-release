@@ -97,7 +97,8 @@ def test_server_backup_plans_do_not_archive_worker_installations(mode):
         assert actions.index(('worker1','stop'))<actions.index(('worker1','install'))
 
 
-def test_media_export_excludes_models_but_keeps_workflows_and_inputs(tmp_path,monkeypatch):
+@pytest.mark.parametrize('server_only',[False,True])
+def test_media_export_excludes_models_but_keeps_workflows_and_inputs(tmp_path,monkeypatch,server_only):
     if not shutil.which('tar'):pytest.skip('tar required')
     media=tmp_path/'media';config=tmp_path/'release'/'app';stage=tmp_path/'stage'
     config.mkdir(parents=True);stage.mkdir();(config/'app.env').write_text('test-config')
@@ -109,11 +110,18 @@ def test_media_export_excludes_models_but_keeps_workflows_and_inputs(tmp_path,mo
         return ''
     monkeypatch.setattr(linux.os,'chown',lambda *a:None,raising=False)
     m=SimpleNamespace(P={'role':'app','operation':'export','stage':str(stage)},ST={'version':'v1'},STATE=tmp_path/'state',run=run,old_target=lambda:config.parent,digest=archive.sha)
+    if server_only:
+        m.P['server_backup_only']=True
+        (stage/'media.tar.gz').write_bytes(b'uploaded-restore-source')
     result=linux.export_data(m)
-    with tarfile.open(stage/'media.tar.gz','r:gz') as tar:
+    exported=Path(result['server_backup'])/'media.tar.gz' if server_only else stage/'media.tar.gz'
+    with tarfile.open(exported,'r:gz') as tar:
         names={str(Path(i.name)).replace('\\','/').removeprefix('./') for i in tar if i.isfile()}
     assert names=={'workflows/1.py','workflows/1.py.sig','workflows/1.ipynb','external_source_files/input.csv'}
-    assert result['files']['media.tar.gz']['sha256']==archive.sha(stage/'media.tar.gz')
+    if server_only:
+        assert result['staged'] is False and 'files' not in result
+        assert (stage/'media.tar.gz').read_bytes()==b'uploaded-restore-source'
+    else:assert result['files']['media.tar.gz']['sha256']==archive.sha(stage/'media.tar.gz')
     assert (media/'models_files/large.rsa').is_file()
 
     # Exercise the separate automatic-update backup implementation as well.
@@ -181,7 +189,7 @@ def test_portable_restore_sends_model_exclusion_scope_to_validation_and_restore(
     e=fake_engine(tmp_path/'site');e.factory=CaptureRemote;e.vault.data['secrets']=record['vault']['secrets']
     Maintenance(e).run('restore',encrypted,'password-for-test')
     data_calls=[p for r,a,p in calls if a in ('data-validate','data-restore')]
-    assert len(data_calls)==4
+    assert len(data_calls)==6
     assert all(p['media_scope']==linux.MEDIA_SCOPE for p in data_calls)
 
 
@@ -355,7 +363,7 @@ def test_export_completed_selective_update_and_retry_failed_version_gate(tmp_pat
     assert all(p['manifest']==components[r]['manifest'] for r,a,p in calls if a=='maintenance-stop')
     calls.clear();Maintenance(e).run('restore',path,'password-for-test')
     restore=[(r,p) for r,a,p in calls if a in ('data-validate','data-restore')]
-    assert len(restore)==4
+    assert len(restore)==6
     assert all(p['restore_target']==components[r] and p['restore_strategy']=='validated-forward-v1' for r,p in restore)
 
 

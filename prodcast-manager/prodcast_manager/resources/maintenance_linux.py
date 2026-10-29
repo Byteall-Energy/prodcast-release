@@ -50,6 +50,8 @@ def export_data(m):
         m.run(['tar','-czf',folder/'configuration.tar.gz','-C',m.old_target(),'app'])
         names=['media.tar.gz','configuration.tar.gz']
     else:raise RuntimeError('Data export is supported only on App and DB')
+    if m.P.get('server_backup_only'):
+        return {'server_backup':str(folder),'staged':False}
     # Only these files become readable by the authenticated SSH account.
     stage=Path(m.P['stage']);uid=stage.stat().st_uid;gid=stage.stat().st_gid
     output={}

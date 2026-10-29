@@ -99,17 +99,25 @@ def access_rule(m,enabled):
 
 
 def prepare_database(m):
+    spec=m.P['restore_file'];path=Path(m.P['stage'])/spec['name']
+    if path.stat().st_size!=spec['bytes'] or m.digest(path)!=spec['sha256']:
+        raise RuntimeError('Restore file checksum mismatch before database staging')
     check_database(m)
     stage,previous=database_names(m);record=load_receipt(m,'db');oids=database_oids(m)
     if record and oids.get('prodcast2')==record.get('stage_oid') and oids.get(previous)==record.get('original_oid'):
+        if record.get('prepared_source_sha256')!=spec['sha256']:raise RuntimeError('Activated restore lacks verified source staging; inspect retained database before continuing')
         record['phase']='switched';save_receipt(m,'db',record);access_rule(m,False)
         return dict(switched=True,previous_database=previous)
     if record.get('phase') in ('prepared','switching'):
         if oids.get('prodcast2')!=record.get('original_oid') or oids.get(stage)!=record.get('stage_oid'):
             raise RuntimeError('Restore database identities changed; refusing to reuse staging')
-        m.psql('ALTER DATABASE '+stage+' WITH ALLOW_CONNECTIONS true;')
-        access_rule(m,True)
-        return dict(switched=False,database=stage)
+        if record.get('prepared_source_sha256')==spec['sha256']:
+            m.psql('ALTER DATABASE '+stage+' WITH ALLOW_CONNECTIONS true;')
+            access_rule(m,True)
+            return dict(switched=False,database=stage)
+        # Older Managers could overwrite the uploaded dump with their safety copy.
+        # Only rebuild our temporary DB while the original DB identity is unchanged.
+        record['phase']='preparing';save_receipt(m,'db',record)
     if not record:
         if stage in oids or previous in oids:raise RuntimeError('Unowned restore database name exists')
         if 'prodcast2' not in oids:raise RuntimeError('Original application database is missing')
@@ -124,12 +132,14 @@ def prepare_database(m):
     m.psql('REVOKE ALL ON DATABASE '+stage+' FROM PUBLIC; GRANT CONNECT ON DATABASE '+stage+' TO prodcast_app;')
     path=Path(m.P['stage'])/m.P['restore_file']['name']
     with path.open('rb') as src:
-        subprocess.run(command(m)+['pg_restore','--single-transaction','--exit-on-error','-d',stage],stdin=src,stdout=subprocess.DEVNULL,stderr=m.LOG,check=True)
+        # Worker membership may have changed since backup. Restore object ownership,
+        # but discard historical grants; current Worker permissions are reapplied at cutover.
+        subprocess.run(command(m)+['pg_restore','--no-acl','--single-transaction','--exit-on-error','-d',stage],stdin=src,stdout=subprocess.DEVNULL,stderr=m.LOG,check=True)
     actual=database_info(m,stage)
     source=m.P.get('restore_database')
     if source and actual['applied_migrations']!=source['applied_migrations']:
         raise RuntimeError('Restored migration history differs from the backup metadata')
-    record.update(stage_oid=database_oids(m)[stage],phase='prepared');save_receipt(m,'db',record)
+    record.update(stage_oid=database_oids(m)[stage],prepared_source_sha256=spec['sha256'],phase='prepared');save_receipt(m,'db',record)
     access_rule(m,True)
     return dict(switched=False,database=stage)
 
@@ -189,6 +199,7 @@ def promote_database(m):
     context(m)
     stage,previous=database_names(m);record=load_receipt(m,'db');oids=database_oids(m)
     if not record:raise RuntimeError('No prepared restore database')
+    if record.get('prepared_source_sha256')!=m.P['restore_file']['sha256']:raise RuntimeError('Restore database source has not been verified; retry database staging')
     if oids.get('prodcast2')==record.get('stage_oid') and oids.get(previous)==record.get('original_oid'):
         access_rule(m,False)
         restore_grants(m)
@@ -222,8 +233,11 @@ def prepare_media(m):
     stage=transaction/'media';previous=transaction/'previous'
     if record and record.get('phase') in ('prepared','moving-old','moving-new','switched'):
         if record.get('volume')!=str(volume):raise RuntimeError('App media volume changed during restore')
-        return {'prepared':True}
+        if record.get('prepared_source_sha256')==m.P['restore_file']['sha256']:return {'prepared':True}
+        if record['phase']!='prepared':raise RuntimeError('Media cutover lacks verified source staging; inspect retained media before continuing')
     path=Path(m.P['stage'])/m.P['restore_file']['name']
+    spec=m.P['restore_file']
+    if path.stat().st_size!=spec['bytes'] or m.digest(path)!=spec['sha256']:raise RuntimeError('Restore file checksum mismatch before media staging')
     exclude=m.P.get('media_scope')==MEDIA_SCOPE
     validate_media(path,exclude_models=exclude)
     with tarfile.open(path,'r:gz') as tar:
@@ -242,7 +256,7 @@ def prepare_media(m):
             os_chmod_chown(target,member)
     previous.mkdir(exist_ok=True)
     record=initial_receipt(m)
-    record.update(volume=str(volume),old_entries=sorted(p.name for p in volume.iterdir() if p.name!=INTERNAL_MEDIA and not (exclude and p.name in MODEL_DIRECTORIES)),new_entries=sorted(p.name for p in stage.iterdir()),phase='prepared')
+    record.update(volume=str(volume),prepared_source_sha256=spec['sha256'],old_entries=sorted(p.name for p in volume.iterdir() if p.name!=INTERNAL_MEDIA and not (exclude and p.name in MODEL_DIRECTORIES)),new_entries=sorted(p.name for p in stage.iterdir()),phase='prepared')
     save_receipt(m,'app',record)
     return {'prepared':True}
 
@@ -256,6 +270,7 @@ def promote_media(m):
     from maintenance_linux import owned_path
     context(m);record=load_receipt(m,'app')
     if not record:raise RuntimeError('No prepared media restore')
+    if record.get('prepared_source_sha256')!=m.P['restore_file']['sha256']:raise RuntimeError('Restore media source has not been verified; retry media staging')
     volume=Path(record['volume']);owned_path(volume,volume)
     base=owned_path(volume/INTERNAL_MEDIA/context(m),volume);stage=base/'media';previous=base/'previous'
     if record['phase'] in ('prepared','moving-old'):

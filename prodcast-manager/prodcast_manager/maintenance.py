@@ -227,7 +227,11 @@ class Maintenance:
                                 for role in ('db','app'):
                                     marker='safety-'+role
                                     if marker not in journal['steps']:
-                                        self.action(role,'data-export');journal['steps'].append(marker);atomic_json(local,journal)
+                                        self.action(role,'data-export',server_backup_only=True);journal['steps'].append(marker);atomic_json(local,journal)
+                                # Reassert the source after safety copies, including retries from older Managers.
+                                for role,name in [('db','prodcast2.dump'),('app','media.tar.gz')]:
+                                    self.remotes[role].put(folder/'data'/role/name)
+                                    self.action(role,'data-validate',**restore_options[role])
                                 self.e.log('Staging restored App files and an isolated database. The current database is retained until migrations pass.')
                                 self.action('app','data-stage-media',**restore_options['app'])
                                 prepared=self.action('db','data-prepare',**restore_options['db'])

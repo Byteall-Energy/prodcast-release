@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import hashlib
 import sys
 import tarfile
 from pathlib import Path
@@ -63,7 +64,7 @@ def test_hba_rule_is_narrow_owned_and_reversible(restore):
 
 def test_switch_requires_app_proof_and_retries_after_lost_reply(restore,monkeypatch):
     r,m=restore;stage,previous=r.database_names(m)
-    record=r.initial_receipt(m);record.update(phase='prepared',original_oid=1,stage_oid=2)
+    record=r.initial_receipt(m);record.update(phase='prepared',original_oid=1,stage_oid=2,prepared_source_sha256=m.P['restore_file']['sha256'])
     r.save_receipt(m,'db',record)
     oids={'prodcast2':1,stage:2};calls=[]
     monkeypatch.setattr(r,'database_oids',lambda m:oids)
@@ -96,9 +97,16 @@ def test_media_stages_without_touching_live_then_preserves_models(restore,monkey
     with tarfile.open(upload/'media.tar.gz','w:gz') as tar:
         member=tarfile.TarInfo('workflows/new');member.size=3
         tar.addfile(member,io.BytesIO(b'new'))
+    m.digest=lambda path:hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    m.P['restore_file'].update(bytes=(upload/'media.tar.gz').stat().st_size,sha256=m.digest(upload/'media.tar.gz'))
     m.run=lambda args:json.dumps([{'Mountpoint':str(volume)}])
     monkeypatch.setattr(r,'os_chmod_chown',lambda *args:None)
     r.prepare_media(m);assert (volume/'workflows/old').read_text()=='old'
+    record=r.load_receipt(m,'app');record.pop('prepared_source_sha256');r.save_receipt(m,'app',record)
+    staged=volume/r.INTERNAL_MEDIA/r.context(m)/'media/workflows/new'
+    staged.write_text('wrong safety-copy content')
+    r.prepare_media(m)
+    assert staged.read_text()=='new'
     result=r.promote_media(m);r.promote_media(m)
     assert (volume/'workflows/new').read_text()=='new'
     assert (Path(result['previous_media'])/'workflows/old').read_text()=='old'
@@ -119,3 +127,26 @@ def test_release_order_and_metadata_validation():
     assert release_order('v0.6.6')<release_order('v0.7.1-rc.2')<release_order('v0.7.1')
     with pytest.raises(ValueError):release_order(123)
     with pytest.raises(ValueError):validate_database_metadata({'major':True})
+
+
+def test_database_restore_discards_historical_worker_grants_but_keeps_owners(restore,monkeypatch):
+    r,m=restore;stage,_=r.database_names(m)
+    upload=Path(m.P['stage']);upload.mkdir();dump=upload/'prodcast2.dump';dump.write_bytes(b'dump-with-removed-worker-acls')
+    m.digest=lambda path:hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    m.P['restore_file'].update(name=dump.name,bytes=dump.stat().st_size,sha256=m.digest(dump))
+    m.LOG=io.StringIO();m.psql=lambda *args:'1024'
+    oids={'prodcast2':1};calls=[]
+    monkeypatch.setattr(r,'check_database',lambda m:None)
+    monkeypatch.setattr(r,'database_oids',lambda m:dict(oids))
+    monkeypatch.setattr(r,'database_info',lambda *args:{'applied_migrations':[]})
+    monkeypatch.setattr(r,'access_rule',lambda *args:None)
+    monkeypatch.setattr(r.shutil,'disk_usage',lambda p:SimpleNamespace(free=1024**3))
+    def run(args,**kwargs):
+        calls.append(args)
+        assert '--no-acl' in args
+        assert '--no-owner' not in args
+        oids[stage]=2
+    monkeypatch.setattr(r.subprocess,'run',run)
+    assert r.prepare_database(m)=={'switched':False,'database':stage}
+    assert len(calls)==1
+    assert r.load_receipt(m,'db')['prepared_source_sha256']==m.digest(dump)
