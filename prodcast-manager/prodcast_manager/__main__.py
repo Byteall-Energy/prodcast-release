@@ -1,4 +1,4 @@
-from .i18n import tr
+from .i18n import tr, english_log
 import argparse
 import getpass
 import json
@@ -103,4 +103,4 @@ def main():
 
 if __name__=='__main__':
     try:main()
-    except Exception as e:print('ERROR:',e);raise SystemExit(1)
+    except Exception as e:print('ERROR:',english_log(str(e)));raise SystemExit(1)

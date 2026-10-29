@@ -63,7 +63,60 @@ def test_remote_error_downloads_redacted_diagnostics_and_preserves_failure(tmp_p
     def unavailable():raise OSError('SSH unavailable')
     r.collect_diagnostics=unavailable
     with pytest.raises(RuntimeError,match='Ollama not ready'):r.action({},'install',None)
-    assert 'не удалось' in messages[-1]
+    assert 'could not' in messages[-1].lower()
+
+
+def test_operation_logs_stay_english_with_russian_ui_and_preserve_values(tmp_path):
+    from prodcast_manager.i18n import set_language,language,tr
+    previous=language()
+    try:
+        set_language('ru')
+        log=SessionLog(tmp_path)
+        path=r'C:\Пользователи\тест\prodcast-data\logs\worker.log'
+        message='worker1: диагностика сервера сохранена на этом ПК: '+path
+        clean=log.append(message)
+        assert clean=='worker1: server diagnostics saved on this PC: '+path
+        assert language()=='ru' and tr('ОШИБКА: ')=='ОШИБКА: '
+        clean=log.append('ОШИБКА: Включите AI на вкладке «AI». Отсутствие пакетов не означает отключение установленного AI.')
+        assert clean.startswith('ERROR: Enable AI on the AI tab.')
+        set_language('en')
+        assert log.append(message)=='worker1: server diagnostics saved on this PC: '+path
+        assert path in log.path.read_text('utf-8')
+    finally:set_language(previous)
+
+
+def test_controller_history_and_session_log_share_english_messages(tmp_path):
+    from prodcast_manager.desktop_controller import DesktopController
+    from prodcast_manager.i18n import set_language,language
+    previous=language()
+    try:
+        controller=DesktopController(tmp_path)
+        set_language('ru')
+        item=controller.history.begin('backup',controller.directory,('worker1',))
+        controller.local.operation=item
+        controller.emit('worker1: шаг выполняется, прошло 20 с')
+        assert language()=='ru'
+        events=controller.history.events(item['id'])
+        assert events[-1]['text']=='worker1: step running, elapsed 20 s'
+        assert 'worker1: step running, elapsed 20 s' in controller.log.path.read_text('utf-8')
+    finally:set_language(previous)
+
+
+def test_engine_and_transport_messages_are_english_even_for_cli_russian_ui(tmp_path):
+    from prodcast_manager import engine,ssh
+    from test_manager import engine as make_engine
+    from prodcast_manager.i18n import set_language,language
+    previous=language()
+    try:
+        set_language('ru')
+        template=make_engine(tmp_path);messages=[]
+        instance=engine.Engine(template.c,template.vault,template.release,tmp_path,log=messages.append)
+        instance.log('worker1: шаг выполняется, прошло 20 с')
+        assert messages==['worker1: step running, elapsed 20 s']
+        assert engine.tr('ОШИБКА: ')=='ОШИБКА: '
+        assert ssh.tr('{v0}: шаг выполняется, прошло {v1} с').format(v0='worker1',v1=20)=='worker1: step running, elapsed 20 s'
+        assert language()=='ru'
+    finally:set_language(previous)
 
 def test_gui_copy_selection_all_and_cyrillic_shortcuts(tmp_path):
     import tkinter as tk

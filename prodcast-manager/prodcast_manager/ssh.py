@@ -1,4 +1,4 @@
-from .i18n import tr
+from .i18n import log_tr as tr
 import base64
 import hashlib
 import json

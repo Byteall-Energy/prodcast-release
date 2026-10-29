@@ -7,6 +7,7 @@ EN.update(DIRECTORY_EN)
 from .maintenance_translations import EN as MAINTENANCE_EN
 EN.update(MAINTENANCE_EN)
 EN.update({
+    'Включите AI на вкладке «AI». Отсутствие пакетов не означает отключение установленного AI.':'Enable AI on the AI tab. Leaving packages unselected does not disable an existing AI installation.',
     'LDAP: проверка соединения успешна.':'LDAP: connection check successful.',
     'LDAP: проверка успешна. Служебный вход, Base DN и группа допуска проверены.':'LDAP: check successful. Service-account login, Base DN and allowed group verified.',
     'LDAP: пробный вход успешен, пользователь входит в группу допуска. Это не включает вход в App.':'LDAP: test login successful; the user belongs to the allowed group. This does not enable App login.',
@@ -37,10 +38,13 @@ def set_language(language):
 def language():return _language
 def tr(text):return EN.get(text,text) if _language=='en' else text
 
-def rendered(text):
+def log_tr(text):return EN.get(text,text)
+
+def rendered(text,target_language=None):
     """Translate already displayed labels when changing language without rebuilding forms."""
+    selected=target_language or _language
     for ru,en in EN.items():
-        source,target=(ru,en) if _language=='en' else (en,ru)
+        source,target=(ru,en) if selected=='en' else (en,ru)
         if text==source:return target
         if '{v' in source:
             pattern='';names=[]
@@ -57,9 +61,23 @@ def rendered(text):
                     if field is not None:result+=values[field]
                 return result
     for ru,en in sorted(EN.items(),key=lambda pair:len(pair[0]),reverse=True):
-        source,target=(ru,en) if _language=='en' else (en,ru)
+        source,target=(ru,en) if selected=='en' else (en,ru)
         if source and ('{v' not in source) and text.startswith(source):return target+text[len(source):]
     return text
+
+
+def english_log(text):
+    """Normalize Manager messages without changing UI language or diagnostic data."""
+    def line(value):
+        for source,target in (('ОШИБКА: ','ERROR: '),('ERROR: ','ERROR: '),
+                              ('ПРЕДУПРЕЖДЕНИЕ AI: ','AI WARNING: '),('AI WARNING: ','AI WARNING: ')):
+            if value.startswith(source):return target+line(value[len(source):])
+        translated=rendered(value,'en')
+        if translated!=value:return translated
+        role=re.match(r'^((?:app|db|ai|worker[1-9][0-9]*):\s*)(.*)$',value,re.S)
+        if role:return role[1]+rendered(role[2],'en')
+        return value
+    return ''.join(line(part.rstrip('\r\n'))+part[len(part.rstrip('\r\n')):] for part in str(text).splitlines(keepends=True))
 
 def localize(root):
     import tkinter as tk

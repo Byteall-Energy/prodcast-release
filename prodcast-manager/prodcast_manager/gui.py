@@ -13,7 +13,7 @@ from .release import Release
 from .engine import Engine, plan
 from .ssh import scan
 from . import __version__
-from .i18n import set_language, language, localize, rendered, tr
+from .i18n import set_language, language, localize, tr, english_log
 from .session_logs import SessionLog, application_directory
 from .portable import (data_directory, profile_directory, runtime_config, save_config, import_site,
                        open_credentials, LegacyPasswordRequired, remember, last_directory)
@@ -310,7 +310,7 @@ class Actions:
         except Exception as e:self.credentials_error(e)
 
     def log(self,text):
-        text=rendered(text)
+        text=english_log(text)
         try:clean=self.session_log.append(text)
         except OSError as e:
             clean=self.session_log.redact(text)+tr('\nНе удалось записать локальный лог: ')+str(e)

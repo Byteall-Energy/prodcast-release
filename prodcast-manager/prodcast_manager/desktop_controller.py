@@ -14,7 +14,7 @@ from pathlib import Path
 from . import __version__
 from .config import validate, atomic_json, worker_roles, topology_hash, fresh_site
 from .engine import Engine
-from .i18n import set_language, rendered
+from .i18n import set_language
 from .operation_history import OperationHistory, pending_operations, filtered_events
 from .portable import (data_directory, last_directory, runtime_config, save_config,
                        open_credentials, profile_directory, remember, import_site)
@@ -276,7 +276,7 @@ class DesktopController:
         self.log.protect(vault.data);vault.save();return {'saved':True,'applied':False}
 
     def emit(self, text):
-        clean = self.log.append(rendered(text))
+        clean = self.log.append(text)
         item = getattr(self.local,'operation',None)
         if item: self.history.append(item,clean)
 

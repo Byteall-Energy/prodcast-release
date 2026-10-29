@@ -1,4 +1,4 @@
-from .i18n import tr
+from .i18n import tr, log_tr, english_log
 import json
 import time
 import uuid
@@ -40,7 +40,7 @@ class Engine:
         self.c=validate(c,True); self.vault=vault; self.release=release
         validate_membership(c,vault.data)
         self.dir=Path(state_dir); self.dir.mkdir(parents=True,exist_ok=True)
-        self.log=log; self.factory=remote_factory; self.remotes={}
+        self.log=lambda message:log(english_log(message)); self.factory=remote_factory; self.remotes={}
         self.report=[]
         self.diagnostics=diagnostics
 
@@ -410,7 +410,7 @@ class Engine:
             core_report['ai']=optional
             try:atomic_json(self.dir/('report-'+operation+'.json'),core_report)
             except OSError:self.log(tr('Не удалось дополнить отчёт результатом AI. Успешный журнал основного стека сохранён.'))
-            label={'complete':tr('успешно'),'disabled':tr('отключён'),'skipped':tr('пропущен — существующая установка сохранена'),'warning':tr('требует внимания'),'checked':tr('проверен'),'not_installed':tr('не установлен')}.get(optional['status'],optional['status'])
+            label={'complete':log_tr('успешно'),'disabled':log_tr('отключён'),'skipped':log_tr('пропущен — существующая установка сохранена'),'warning':log_tr('требует внимания'),'checked':log_tr('проверен'),'not_installed':log_tr('не установлен')}.get(optional['status'],optional['status'])
             self.log(tr('Готово. Основной стек: успешно. AI: ')+label+'.')
             return self.report
         except Exception:

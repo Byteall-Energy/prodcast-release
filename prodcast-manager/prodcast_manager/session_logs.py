@@ -1,5 +1,6 @@
 """Local UTF-8 logs live next to the executable, never in the extraction temp dir."""
 import re
+from .i18n import english_log
 import sys
 import threading
 import uuid
@@ -55,7 +56,7 @@ class SessionLog:
 
     def append(self,message):
         with self.lock:
-            clean=self.redact(message)
+            clean=english_log(self.redact(message))
             with self.path.open('a',encoding='utf-8') as f:
                 f.write(datetime.now().astimezone().isoformat(timespec='seconds')+' '+clean+'\n');f.flush()
             return clean
