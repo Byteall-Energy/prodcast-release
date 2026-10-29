@@ -744,6 +744,19 @@ class DesktopWindow:
         elif result['mode'].startswith('directory-'):
             title=self.t('LDAP test successful','Проверка LDAP успешна') if value.get('ok') else self.t('LDAP test failed','Ошибка проверки LDAP')
             self.text_dialog(title,json.dumps(value,ensure_ascii=False,indent=2))
+        elif result['mode']=='export' and value.get('status')=='complete':
+            size=value.get('bytes',0)
+            size_text=(f'{size/1024/1024:.2f} MiB' if size>=1024*1024 else f'{size/1024:.1f} KiB')
+            self.message(self.t('Backup completed','Резервная копия создана'),
+                self.t('Backup completed successfully.','Резервное копирование успешно завершено.')+'\n\n'+
+                self.t('File: ','Файл: ')+value['archive']+'\n'+self.t('Size: ','Размер: ')+size_text+'\n\n'+
+                self.t('Previously running App and Worker services have been restored. Model files are excluded; keep their backups separately.','Ранее работавшие службы App и Worker восстановлены. Файлы моделей исключены; сохраняйте их отдельно.'))
+        elif result['mode']=='backup':
+            steps=value.get('result',[])
+            paths=[str(item['role'])+': '+str(item['result']['path']) for item in steps if isinstance(item,dict) and item.get('action')=='backup' and isinstance(item.get('result'),dict) and item['result'].get('path')]
+            self.message(self.t('Server backup completed','Бэкапы на серверах созданы'),
+                self.t('Server backups completed successfully.','Резервное копирование на серверах успешно завершено.')+'\n\n'+'\n'.join(paths)+'\n\n'+
+                self.t('These backups remain on the servers. Use Export encrypted .pcbackup to save an archive on this PC.','Эти копии остаются на серверах. Для сохранения архива на этом ПК используйте экспорт .pcbackup.'))
         else:self.text_dialog(self.t('Operation complete','Операция завершена'),json.dumps(value,ensure_ascii=False,indent=2))
 
 

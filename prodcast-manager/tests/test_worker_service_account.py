@@ -4,6 +4,51 @@ import pytest
 from prodcast_manager.engine import RESOURCES
 
 
+@pytest.mark.parametrize('case',['immediate','delayed','never-ready','foreign-path'])
+def test_maintenance_waits_for_worker_readiness_without_restarting_it(tmp_path,case):
+    script=r'''
+param($Source,$Case)
+$ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw ($errors | Out-String)}
+foreach($name in @('Test-WorkerRuntime','Wait-WorkerMaintenanceReady')){
+ $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+ . ([scriptblock]::Create($fn.Extent.Text))
+}
+$service='ProdCastWorker01';$script:state=@{install_root='C:\ProdCast\Managed\current'}
+$script:sleeps=0;$script:diagnostics=0
+function Get-CimInstance {
+ $path=if($Case -eq 'foreign-path'){'C:\foreign\worker.exe'}else{'C:\ProdCast\Managed\current\ProdCastWorker01.exe'}
+ return [pscustomobject]@{State='Running';PathName=$path}
+}
+function Test-Path {param($LiteralPath,$PathType)
+ if($LiteralPath.EndsWith('scheduler-service-ready.json')){
+  return $Case -eq 'immediate' -or ($Case -eq 'delayed' -and $script:sleeps -ge 2)
+ }
+ return $true
+}
+function Start-Sleep {param($Seconds) $script:sleeps++}
+function Write-WorkerServiceDiagnostic {$script:diagnostics++}
+function Start-Service {throw 'Health check must not restart service'}
+function Set-Service {throw 'Health check must not configure service'}
+$failure=''
+try{Wait-WorkerMaintenanceReady 4}catch{$failure=$_.Exception.Message}
+if($Case -in @('immediate','delayed')){
+ if($failure){throw $failure}
+ if($script:diagnostics){throw 'Unexpected failure diagnostics'}
+ if($Case -eq 'immediate' -and $script:sleeps){throw 'Ready Worker should not wait'}
+ if($Case -eq 'delayed' -and $script:sleeps -ne 2){throw 'Must wait for readiness marker'}
+}else{
+ if($failure -notmatch 'within 4 seconds' -or $script:diagnostics -ne 1 -or $script:sleeps -ne 2){throw 'Timeout must be bounded and diagnosed'}
+}
+'OK'
+'''
+    path=tmp_path/'maintenance-ready.ps1';path.write_text(script,'utf-8')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path),'-Source',str(RESOURCES/'worker.ps1'),'-Case',case],capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'OK' in result.stdout
+
+
 def test_existing_identity_is_preserved_and_credentials_checked_before_mutations(tmp_path):
     script=r'''
 param([string]$Source)

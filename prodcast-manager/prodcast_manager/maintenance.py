@@ -34,6 +34,27 @@ def read_backup(path,password,folder):
     return archive.unpack(plain,folder/'data')
 
 
+def installed_releases(engine,statuses):
+    """Accept completed selective deployments, but never infer an unverified mix."""
+    roles=set(core_roles(engine.c))
+    if set(statuses)!=roles or not all(s.get('managed') and s.get('version') and s.get('manifest') for s in statuses.values()):
+        raise ValueError('Install App, DB and Workers before backup/restore')
+    versions={r:{k:statuses[r][k] for k in ('version','manifest')} for r in roles}
+    baseline=engine.vault.data.get('deployment_components')
+    if baseline:
+        if baseline.get('schema')!=1 or baseline.get('installation_id')!=engine.vault.data.get('installation_id') or baseline.get('topology')!=topology_hash(engine.c) or set(baseline.get('roles',{}))!=roles:
+            raise ValueError('Component deployment records do not match this installation; restore the matching profile before backup/restore')
+        for role in sorted(roles):
+            if any(baseline['roles'][role].get(k)!=v for k,v in versions[role].items()):
+                raise ValueError(role+': installed release differs from its component deployment record; finish or reconcile that component before backup/restore')
+    elif len({(v['version'],v['manifest']) for v in versions.values()})!=1:
+        raise ValueError('Different component releases need verified deployment records; restore the original Manager profile before backup/restore')
+    core=engine.dir/'journal.json'
+    if core.exists() and json.loads(core.read_text('utf-8')).get('status') in ('running','failed'):
+        raise ValueError('Complete or stop the pending core operation before backup/restore')
+    return versions
+
+
 def import_backup_profile(path,password,parent,destination):
     """Recover identity and encryption keys; SSH credentials must be supplied again."""
     destination=Path(destination)
@@ -44,7 +65,7 @@ def import_backup_profile(path,password,parent,destination):
         for host in site['hosts'].values():host.update(auth='password',key_path='')
         config=save_config(destination,site)
         vault=open_credentials(destination);vault.data=data['vault'];vault.data['ssh']={};vault.save()
-        atomic_json(destination/'recovery-source.json',{'version':data['version'],'manifest':data['manifest'],'installation_id':vault.data['installation_id']})
+        atomic_json(destination/'recovery-source.json',{'version':data['version'],'manifest':data['manifest'],'installation_id':vault.data['installation_id'],**({'component_versions':data['component_versions']} if 'component_versions' in data else {})})
         return config
 
 
@@ -53,7 +74,9 @@ class Maintenance:
 
     def action(self,role,action,**extra):
         payload=self.e.payload(role,self.operation,self.mode);payload.update(extra)
-        if role in self.statuses:payload['version']=self.statuses[role].get('version','')
+        if role in self.statuses:
+            payload['version']=self.statuses[role].get('version','')
+            payload['manifest']=self.statuses[role].get('manifest','')
         payload['external_activation']=bool(self.e.vault.data.get('activation'))
         self.e.log(role+': '+action)
         return self.remotes[role].action(payload,action,RESOURCES)
@@ -118,6 +141,11 @@ class Maintenance:
             roles=list(core_roles(self.e.c))
             if mode.startswith('reset-') and self.e.c.get('install_ai',True):roles.append('ai')
             try:
+                if mode=='export' and not journal.get('backup_destination'):
+                    if not str(path).strip() or not Path(path).name or Path(path).is_dir():raise ValueError('Choose a backup file destination before exporting')
+                    destination=Path(path)
+                    if not destination.parent.is_dir():raise ValueError('The backup destination folder does not exist')
+                    if destination.exists() or destination.with_name(destination.name+'.partial').exists():raise ValueError('Choose a new backup filename')
                 self.connect(roles)
                 if journal.get('work_complete'):
                     pass  # Only lease release was interrupted; never repeat data changes.
@@ -126,6 +154,7 @@ class Maintenance:
                     if Path(path).resolve()!=saved or not saved.is_file() or archive.sha(saved)!=journal['backup_sha256']:
                         raise ValueError('Resume with the already exported backup file, unchanged')
                     self.resume(journal['previous_runtime'])
+                    journal['services_recovered']=True
                 elif mode.startswith('reset-'):
                     for role in [*worker_roles(self.e.c),'app',*(['ai'] if 'ai' in roles else []),'db']:
                         self.action(role,'reset');journal['steps'].append(role);atomic_json(local,journal)
@@ -136,16 +165,19 @@ class Maintenance:
                     # Identity/license/keys are retained locally, including after full reset.
                     self.e.log('Reset complete. '+('Use Repair with the exact installed release. For an incomplete first install, resume Install with its original release.' if mode=='reset-keep' else 'Use Install to deploy again.'))
                 else:
-                    if not all(s.get('managed') and s.get('version') for s in self.statuses.values()):raise ValueError('Install App, DB and Workers before backup/restore')
-                    versions={(s['version'],s['manifest']) for s in self.statuses.values()}
-                    if len(versions)!=1:raise ValueError('Finish the stack update before backup/restore')
-                    version,manifest=next(iter(versions))
+                    components=installed_releases(self.e,self.statuses)
+                    version=components['app']['version'];manifest=components['app']['manifest']
+                    if journal.get('component_versions',components)!=components:raise ValueError('Installed component releases changed during maintenance; resume with the original installation')
+                    journal['component_versions']=components;atomic_json(local,journal)
                     with private_workspace(self.e.dir/'temporary') as folder:
                         recovery=None
                         if mode=='restore':
                             recovery=read_backup(path,password,folder)
                             if recovery['vault']['installation_id']!=self.e.vault.data['installation_id']:raise ValueError('Backup belongs to another installation; import its profile first')
-                            if (recovery['version'],recovery['manifest'])!=(version,manifest):raise ValueError('Restore requires the exact complete release recorded in this backup')
+                            expected=recovery.get('component_versions') if recovery['schema']==3 else {r:{'version':recovery['version'],'manifest':recovery['manifest']} for r in components}
+                            if not isinstance(expected,dict) or set(expected)!=set(components):raise ValueError('Backup component roster differs from this installation')
+                            for role in components:
+                                if expected[role]!=components[role]:raise ValueError(role+': restore requires its exact installed release recorded in this backup')
                             if recovery['vault']['secrets']!=self.e.vault.data['secrets']:raise ValueError('Encryption keys differ; import the original backup profile before restoring')
                             media_scope=recovery.get('media_scope','legacy-full-media')
                             if media_scope not in ('legacy-full-media','application-data-without-models-v1'):raise ValueError('Unsupported backup media scope')
@@ -154,11 +186,11 @@ class Maintenance:
                             journal['source_sha256']=source_sha
                             for role,name in [('db','prodcast2.dump'),('app','media.tar.gz')]:
                                 source=folder/'data'/role/name;self.remotes[role].put(source)
-                                extra={'restore_file':{'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},'restore_manifest':manifest,'media_scope':media_scope}
+                                extra={'restore_file':{'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},'restore_manifest':expected[role]['manifest'],'media_scope':media_scope}
                                 self.action(role,'data-validate',**extra)
                         previous=journal.get('previous_runtime') or self.snapshot()
                         journal['previous_runtime']=previous;atomic_json(local,journal)
-                        export_ok=False
+                        export_ok=False;operation_error=None
                         try:
                             if not (mode=='restore' and journal.get('quiesced')):
                                 self.quiesce();journal['quiesced']=True;atomic_json(local,journal)
@@ -169,7 +201,7 @@ class Maintenance:
                                 data=folder/'data'
                                 for role in ('db','app'):self.download(role,data)
                                 vault=copy.deepcopy(self.e.vault.data);vault.pop('ssh',None)
-                                record={'schema':2,'database_major':18,'version':version,'manifest':manifest,'site':self.e.c,'vault':vault,'media_scope':'application-data-without-models-v1'}
+                                record={'schema':3,'database_major':18,'version':version,'manifest':manifest,'component_versions':components,'site':self.e.c,'vault':vault,'media_scope':'application-data-without-models-v1'}
                                 (data/'recovery.json').write_text(json.dumps(record),'utf-8')
                                 archive.pack(data,folder/'backup.zip');archive.encrypt(folder/'backup.zip',path,password);export_ok=True
                                 journal.update(backup_destination=str(Path(path).resolve()),backup_sha256=archive.sha(path));atomic_json(local,journal)
@@ -182,16 +214,34 @@ class Maintenance:
                                         self.action(role,'data-export');journal['steps'].append(marker);atomic_json(local,journal)
                                 for role,name in [('db','prodcast2.dump'),('app','media.tar.gz')]:
                                     source=folder/'data'/role/name;self.remotes[role].put(source)
-                                    self.action(role,'data-restore',restore_file={'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},restore_manifest=manifest,media_scope=media_scope)
+                                    self.action(role,'data-restore',restore_file={'name':name,'bytes':source.stat().st_size,'sha256':archive.sha(source)},restore_manifest=expected[role]['manifest'],media_scope=media_scope)
                                 export_ok=True
+                        except Exception as error:
+                            operation_error=error
+                            self.e.log(('Backup export failed: ' if mode=='export' else 'Data restore failed: ')+str(error))
+                            raise
                         finally:
                             # A partially restored stack must remain stopped until a successful retry.
-                            if mode=='export' or export_ok:self.resume(previous)
+                            if mode=='export' or export_ok:
+                                try:
+                                    self.resume(previous)
+                                    journal['services_recovered']=True
+                                except Exception as recovery_error:
+                                    journal['services_recovered']=False
+                                    self.e.log('Service recovery also needs attention: '+str(recovery_error))
+                                    if operation_error is None:raise
+                                finally:
+                                    journal['archive_saved']=bool(journal.get('backup_destination'))
+                                    atomic_json(local,journal)
                         self.e.log('Backup saved: '+str(path) if mode=='export' else 'Database and App files restored.')
                 journal['work_complete']=True;atomic_json(local,journal)
                 for role in list(self.claimed):
                     self.action(role,'maintenance-release');self.claimed.remove(role)
                 journal['status']='complete';atomic_json(local,journal)
+                result={'status':'complete','mode':mode,'operation':self.operation}
+                if mode=='export':
+                    result.update(archive=journal['backup_destination'],bytes=Path(journal['backup_destination']).stat().st_size,services_recovered=True,models_included=False)
+                return result
             except Exception:
                 journal['status']='failed';atomic_json(local,journal)
                 self.e.log('Maintenance stopped. Keep the profile and backup; retry the same operation after correcting the cause.')

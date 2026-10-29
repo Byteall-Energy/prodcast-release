@@ -16,7 +16,7 @@ from prodcast_manager.directory import app_directory
 from prodcast_manager.engine import Engine,RESOURCES
 from prodcast_manager.engine import plan
 from prodcast_manager.config import example,topology_hash
-from prodcast_manager.maintenance import Maintenance
+from prodcast_manager.maintenance import Maintenance,read_backup
 
 
 @pytest.fixture
@@ -289,3 +289,125 @@ def test_restore_wrong_identity_never_stops_services(backup,tmp_path):
     FakeRemote.instances=[];FakeRemote.fail=None;e=fake_engine(tmp_path/'site');e.vault.data['installation_id']='different'
     with pytest.raises(ValueError,match='another installation'):Maintenance(e).run('restore',backup[2],'password-for-test')
     assert not any('pause' in r.actions or 'data-restore' in r.actions for r in FakeRemote.instances)
+
+
+def selective_installation(tmp_path):
+    e=fake_engine(tmp_path)
+    components={r:{'version':'v0.7.1','manifest':'b'*64} for r in e.c['hosts'] if r!='ai'}
+    components['db']={'version':'v0.6.6','manifest':'c'*64}
+    e.vault.data['secrets']={'FERNET_KEY':'test-secret'}
+    e.vault.data['deployment_components']={'schema':1,'installation_id':'test','topology':topology_hash(e.c),'roles':copy.deepcopy(components)}
+    (e.dir/'journal.json').write_text(json.dumps({'status':'complete','selective':True,'changed_roles':['app','worker1']}))
+    calls=[]
+    class SelectiveRemote(FakeRemote):
+        def action(self,payload,action,*args):
+            calls.append((self.role,action,dict(payload)))
+            if action=='preflight':return {'managed':True,**components[self.role]}
+            return super().action(payload,action,*args)
+    FakeRemote.fail=None;e.factory=SelectiveRemote
+    return e,components,calls
+
+
+def test_export_completed_selective_update_and_retry_failed_version_gate(tmp_path,monkeypatch):
+    e,components,calls=selective_installation(tmp_path/'site')
+    (e.dir/'maintenance-journal.json').write_text(json.dumps({'status':'failed','mode':'export','operation':'original-failed-export','steps':[]}))
+    def download(self,role,folder):
+        for name in (['prodcast2.dump'] if role=='db' else ['media.tar.gz','configuration.tar.gz']):
+            p=folder/role/name;p.parent.mkdir(exist_ok=True,parents=True);p.write_bytes(b'test-backup')
+    monkeypatch.setattr(Maintenance,'download',download)
+    path=tmp_path/'selective.pcbackup';result=Maintenance(e).run('export',path,'password-for-test')
+    assert result['status']=='complete' and result['archive']==str(path.resolve())
+    assert result['bytes']==path.stat().st_size and result['services_recovered'] is True
+    record=read_backup(path,'password-for-test',tmp_path)
+    assert record['schema']==3 and record['component_versions']==components
+    assert record['version']=='v0.7.1' and record['manifest']=='b'*64
+    done=json.loads((e.dir/'maintenance-journal.json').read_text())
+    assert done['status']=='complete' and done['operation']=='original-failed-export'
+    assert all(p['manifest']==components[r]['manifest'] for r,a,p in calls if a=='maintenance-stop')
+    calls.clear();Maintenance(e).run('restore',path,'password-for-test')
+    restore=[(r,p) for r,a,p in calls if a in ('data-validate','data-restore')]
+    assert len(restore)==4
+    assert all(p['restore_manifest']==components[r]['manifest'] for r,p in restore)
+
+
+@pytest.mark.parametrize('failure',['unrecorded-release','missing-records','wrong-installation','pending-core'])
+def test_unverified_or_pending_selective_installation_stops_before_quiescing(tmp_path,failure):
+    e,components,calls=selective_installation(tmp_path)
+    if failure=='unrecorded-release':components['db']['manifest']='d'*64
+    if failure=='missing-records':e.vault.data.pop('deployment_components')
+    if failure=='wrong-installation':e.vault.data['deployment_components']['installation_id']='other'
+    if failure=='pending-core':(e.dir/'journal.json').write_text(json.dumps({'status':'failed'}))
+    with pytest.raises(ValueError):Maintenance(e).run('export',tmp_path/'blocked.pcbackup','password-for-test')
+    assert not any(a in ('pause','drain','maintenance-stop','data-export','data-restore') for r,a,p in calls)
+
+
+def test_selective_restore_rejects_wrong_component_before_data_changes(backup,tmp_path):
+    e,components,calls=selective_installation(tmp_path/'site')
+    data,_,_,record=backup
+    record.update(schema=3,media_scope=linux.MEDIA_SCOPE,version=components['app']['version'],manifest=components['app']['manifest'],component_versions=copy.deepcopy(components))
+    record['vault']['secrets']=e.vault.data['secrets']
+    record['component_versions']['db']['manifest']='d'*64
+    (data/'recovery.json').write_text(json.dumps(record))
+    plain=tmp_path/'wrong.zip';archive.pack(data,plain)
+    encrypted=tmp_path/'wrong.pcbackup';archive.encrypt(plain,encrypted,'password-for-test')
+    with pytest.raises(ValueError,match='db: restore requires'):Maintenance(e).run('restore',encrypted,'password-for-test')
+    assert not any(a in ('pause','drain','maintenance-stop','data-restore') for r,a,p in calls)
+
+
+def fake_download(self,role,folder):
+    for name in (['prodcast2.dump'] if role=='db' else ['media.tar.gz','configuration.tar.gz']):
+        p=folder/role/name;p.parent.mkdir(exist_ok=True,parents=True);p.write_bytes(b'backup')
+
+
+@pytest.mark.parametrize('destination',['','directory','existing','missing-parent'])
+def test_export_invalid_destination_never_stops_services(tmp_path,destination):
+    FakeRemote.instances=[];FakeRemote.fail=None;e=fake_engine(tmp_path/'site')
+    path={'': '', 'directory':tmp_path,'existing':tmp_path/'exists.pcbackup','missing-parent':tmp_path/'absent'/'backup.pcbackup'}[destination]
+    if destination=='existing':path.write_bytes(b'keep')
+    with pytest.raises(ValueError):Maintenance(e).run('export',path,'password-for-test')
+    assert not FakeRemote.instances
+    if destination=='existing':assert path.read_bytes()==b'keep'
+
+
+def test_original_export_error_survives_recovery_failure_and_pending_clears_on_retry(tmp_path,monkeypatch):
+    from prodcast_manager.operation_history import pending_operations
+    FakeRemote.fail=None;e=fake_engine(tmp_path/'site');logs=[];e.log=logs.append
+    error=ValueError('original export failure')
+    def fail_download(*args):raise error
+    def fail_resume(*args):raise RuntimeError('secondary recovery failure')
+    monkeypatch.setattr(Maintenance,'download',fail_download)
+    monkeypatch.setattr(Maintenance,'resume',fail_resume)
+    path=tmp_path/'backup.pcbackup'
+    with pytest.raises(ValueError,match='original export failure') as caught:
+        Maintenance(e).run('export',path,'password-for-test')
+    assert caught.value is error
+    assert any('original export failure' in line for line in logs)
+    assert any('secondary recovery failure' in line for line in logs)
+    journal=json.loads((e.dir/'maintenance-journal.json').read_text())
+    assert journal['archive_saved'] is False and journal['services_recovered'] is False
+    assert len(pending_operations(e.dir))==1
+    monkeypatch.setattr(Maintenance,'download',fake_download)
+    monkeypatch.setattr(Maintenance,'resume',lambda *args:None)
+    Maintenance(e).run('export',path,'password-for-test')
+    done=json.loads((e.dir/'maintenance-journal.json').read_text())
+    assert done['operation']==journal['operation'] and done['status']=='complete'
+    assert not pending_operations(e.dir)
+
+
+def test_saved_archive_recovery_failure_retries_only_recovery(tmp_path,monkeypatch):
+    FakeRemote.fail=None;e=fake_engine(tmp_path/'site')
+    monkeypatch.setattr(Maintenance,'download',fake_download)
+    def fail_resume(*args):raise RuntimeError('restart timed out')
+    monkeypatch.setattr(Maintenance,'resume',fail_resume)
+    path=tmp_path/'saved.pcbackup'
+    with pytest.raises(RuntimeError,match='restart timed out'):Maintenance(e).run('export',path,'password-for-test')
+    journal=json.loads((e.dir/'maintenance-journal.json').read_text())
+    assert journal['archive_saved'] is True and journal['services_recovered'] is False
+    digest=archive.sha(path)
+    def no_download(*args):raise AssertionError('Must not repeat completed export')
+    monkeypatch.setattr(Maintenance,'download',no_download)
+    monkeypatch.setattr(Maintenance,'resume',lambda *args:None)
+    Maintenance(e).run('export',path,'password-for-test')
+    assert archive.sha(path)==digest
+    done=json.loads((e.dir/'maintenance-journal.json').read_text())
+    assert done['status']=='complete' and done['services_recovered'] is True

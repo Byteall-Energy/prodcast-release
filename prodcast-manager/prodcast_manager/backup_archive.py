@@ -99,6 +99,11 @@ def unpack(source,destination):
                 os.chmod(path,0o600);shutil.copyfileobj(src,dst,CHUNK)
             if sha(path)!=expected['sha256']:raise ValueError('Backup checksum mismatch')
     recovery=json.loads((destination/'recovery.json').read_text('utf-8'))
-    if recovery.get('schema') not in (1,2) or recovery.get('database_major')!=18:raise ValueError('Unsupported recovery format')
-    if recovery['schema']==2 and recovery.get('media_scope')!='application-data-without-models-v1':raise ValueError('Unsupported backup media scope')
+    if recovery.get('schema') not in (1,2,3) or recovery.get('database_major')!=18:raise ValueError('Unsupported recovery format')
+    if recovery['schema'] in (2,3) and recovery.get('media_scope')!='application-data-without-models-v1':raise ValueError('Unsupported backup media scope')
+    if recovery['schema']==3:
+        components=recovery.get('component_versions')
+        if not isinstance(components,dict) or not {'app','db'}<=set(components) or any(not isinstance(v,dict) or set(v)!={'version','manifest'} or not all(isinstance(x,str) and x for x in v.values()) for v in components.values()):
+            raise ValueError('Invalid backup component release records')
+        if components['app']!={'version':recovery.get('version'),'manifest':recovery.get('manifest')}:raise ValueError('Backup App release record mismatch')
     return recovery

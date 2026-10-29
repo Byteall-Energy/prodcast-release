@@ -353,6 +353,20 @@ function Test-WorkerRuntime {
     }
     return $true
 }
+function Wait-WorkerMaintenanceReady([int]$timeoutSeconds=120) {
+    $started=Get-Date
+    $attempts=[Math]::Max(1,[Math]::Ceiling($timeoutSeconds/2))
+    for($attempt=0;$attempt -le $attempts;$attempt++){
+        if(Test-WorkerRuntime){return}
+        if($attempt -eq 0){Write-Host ('Waiting for Worker service and scheduler readiness; maximum '+$timeoutSeconds+' seconds, returning as soon as ready.')}
+        if($attempt -lt $attempts){Start-Sleep -Seconds 2}
+    }
+    try{Write-WorkerServiceDiagnostic 'maintenance-readiness-timeout' $started}catch{}
+    foreach($name in @('site.json','scheduler.machine.dpapi','payload\service_runner.pyc','logs\scheduler-service-ready.json')){
+        Write-Host ('Worker maintenance readiness: file='+$name+'; exists='+[bool](Test-Path -LiteralPath (Join-Path $script:state.install_root $name) -PathType Leaf))
+    }
+    throw ('Worker failed its runtime check after restart; readiness was not reached within '+$timeoutSeconds+' seconds. Inspect the Worker logs and service state.')
+}
 function Repair-Worker {
     if(Test-WorkerRuntime){return @{service=$service;preserved=$true}}
     $svc=Get-CimInstance Win32_Service -Filter "Name='$service'"
@@ -434,6 +448,7 @@ function Stop-OwnedWorker {
     Set-Service -Name $service -StartupType Disabled
     Write-Host 'Worker disabled for maintenance; automatic recovery cannot restart it during replacement.'
     try {Stop-Service -Name $service -ErrorAction Stop} catch {Write-Host 'Waiting for the managed Worker to stop.'}
+    Write-Host 'Checking service shutdown and tracked processes; allowing up to 90 seconds for graceful stop before the owned-process fallback.'
     for($i=0;$i -lt 45;$i++){
         $current=Get-CimInstance Win32_Service -Filter "Name='$service'"
         try {Assert-WorkerStopped;Write-Host 'Worker service and tracked process tree are stopped; service remains disabled.';return} catch {}
@@ -496,7 +511,7 @@ function Dispatch {
             return @{started=$true}
         }
         'maintenance-health' {
-            if($p.previous_runtime.running -and !(Test-WorkerRuntime)){throw 'Worker failed its runtime check after restart'}
+            if($p.previous_runtime.running){Wait-WorkerMaintenanceReady}
             return @{healthy=$true}
         }
         'reset' {

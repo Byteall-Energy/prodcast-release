@@ -45,6 +45,22 @@ def test_worker_service_form_keeps_ssh_password_separate(window):
     assert window.worker_services['worker1']['account']=='EXAMPLE\\svc'
 
 
+@pytest.mark.parametrize('language',['en','ru'])
+def test_export_success_shows_saved_file_instead_of_raw_json(window,language):
+    window.config['language']=language
+    window.result({'mode':'export','ok':True,'value':{'status':'complete','archive':'C:/backups/site.pcbackup','bytes':2048}})
+    title,text=window.message.call_args.args[:2]
+    assert 'site.pcbackup' in text and '2.0 KiB' in text
+    assert '[]' not in text
+    window.text_dialog.assert_not_called()
+
+
+def test_server_backup_success_shows_server_paths(window):
+    window.result({'mode':'backup','ok':True,'value':{'result':[{'role':'db','action':'backup','result':{'path':'/var/lib/prodcast-manager/backups/test'}}],'pending':[]}})
+    assert '/var/lib/prodcast-manager/backups/test' in window.message.call_args.args[1]
+    window.text_dialog.assert_not_called()
+
+
 def test_preview_sections_and_settings_without_qt(window):
     for key,_,_ in window.sections:window.navigate(key)
     for key in ('general','https','directory','activation'):
