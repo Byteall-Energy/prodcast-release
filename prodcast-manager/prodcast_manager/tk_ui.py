@@ -417,7 +417,7 @@ class DesktopWindow:
         self.button(form,'Test selected server','Проверить выбранный сервер',lambda:self.start('check_server',{'role':self.role}))
         if self.role.startswith('worker'):
             from .worker_queues import QUEUES, execution_queues
-            form=self.group('Processed tasks · '+self.role,'Обрабатываемые задачи · '+self.role)
+            form=self.group('Task types · '+self.role,'Типы задач · '+self.role)
             selected=set(execution_queues(host))
             for queue,label in zip(QUEUES,('Model-driven','Data-driven','Forecast')):
                 var=tk.BooleanVar(master=self.root,value=queue in selected)

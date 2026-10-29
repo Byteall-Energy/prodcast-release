@@ -135,7 +135,7 @@ Ubuntu 20.04 исключена из текущей матрицы Docker, Debia
 ### Очереди конкретного Worker
 
 В разделе **Серверы и Workers** выберите Worker и отметьте типы задач в блоке
-**Обрабатываемые задачи**: Model-driven (`workflows`), Data-driven
+**Типы задач**: Model-driven (`workflows`), Data-driven
 (`workflows_data`), Forecast (`scenarios`, запуск сценариев). Можно выбрать любое
 непустое сочетание. У каждого Worker собственный набор; один и тот же тип задач
 можно назначить нескольким Workers.
