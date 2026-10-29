@@ -523,6 +523,7 @@ class DesktopWindow:
         return self.t(*names[mode]) if mode in names else mode.replace('-',' ').capitalize()
 
     def build_operation_state(self):
+        self.operation_state_compact=False
         form=self.group('Operation status','Состояние операций')
         self.operation_counts={}
         for key,en,ru in [('running','Running','Выполняются'),('needs_attention','Needs attention','Требуют внимания'),('blocking','Blocks other operations','Блокируют другие операции')]:
@@ -539,10 +540,24 @@ class DesktopWindow:
         self.operation_state_signature=None
         self.update_operation_state()
 
+    def build_operation_strip(self):
+        self.operation_state_compact=True
+        strip=ttk.Frame(self.content,style='White.TFrame',padding=12)
+        strip.pack(fill='x',pady=(0,15))
+        self.operation_counts={}
+        for key,en,ru in [('running','Running','Выполняются'),('needs_attention','Needs attention','Требуют внимания'),('blocking','Blocking','Блокируют')]:
+            ttk.Label(strip,text=self.t(en,ru)+':',style='Card.TLabel').pack(side='left',padx=(0,4))
+            count=ttk.Label(strip,text='0',font=('Segoe UI',11,'bold'),style='Card.TLabel')
+            count.pack(side='left',padx=(0,16));self.operation_counts[key]=count
+        self.operation_details_button=self.button(strip,'View details','Подробнее',self.inspect_operation_state,mutable=False)
+        self.operation_details_button.pack_configure(side='right',pady=0)
+        self.update_operation_state()
+
     def update_operation_state(self):
         summary=self.state['operation_summary']
         colors={'running':BLUE,'needs_attention':'#946300','blocking':'#b42318'}
         for key,widget in self.operation_counts.items():widget.configure(text=str(summary[key]),foreground=colors[key] if summary[key] else MUTED)
+        if self.operation_state_compact:return
         signature=json.dumps(summary['entries'],sort_keys=True)
         if signature==self.operation_state_signature:return
         self.operation_state_signature=signature
@@ -583,7 +598,7 @@ class DesktopWindow:
         self.text_dialog(self.t('Operation status','Состояние операций'),'\n'.join(lines) or self.t('No running or unresolved operations.','Нет выполняемых или незавершённых операций.'))
 
     def build_operations(self):
-        self.build_operation_state()
+        self.build_operation_strip()
         form=self.group('History and diagnostics','История и диагностика')
         self.history_ids=[x['id'] for x in self.state['history']]
         self.history_names=[x.get('mode','')+' · '+x['id'] for x in self.state['history']]
@@ -603,7 +618,6 @@ class DesktopWindow:
         self.button(self.content,'Copy displayed log','Копировать отображаемый журнал',lambda:self.copy(self.log_view.get('1.0','end-1c')),mutable=False)
         self.button(self.content,'Open logs folder','Открыть папку журналов',self.open_logs,mutable=False)
         self.button(self.content,'Inspect older session log…','Открыть журнал прежнего сеанса…',self.legacy_log,mutable=False)
-        self.button(self.content,'Inspect operation status','Состояние операций',self.inspect_operation_state,mutable=False)
         self.button(self.content,'Stop previous core / AI operation…','Остановить предыдущую основную / AI операцию…',self.stop_previous)
         self.note('Stop releases supported core/AI owners; it is not database rollback. Other journals retain their supported resume actions.','Остановка освобождает владельцев основной/AI операции; это не откат БД. Для остальных журналов используйте исходные операции.')
         self.update_logs()

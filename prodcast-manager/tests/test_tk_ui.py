@@ -77,6 +77,24 @@ def test_overview_distinguishes_attention_and_blocking_and_updates_live(window):
     assert 'maintenance-journal.json' in window.text_dialog.call_args.args[1]
 
 
+def test_operations_uses_compact_live_strip_and_shared_details(window):
+    from prodcast_manager.config import atomic_json
+    window.navigate('overview');overview_tree=window.operation_state_tree
+    window.navigate('operations')
+    assert window.operation_state_compact is True
+    assert not overview_tree.winfo_exists()
+    path=window.controller.directory/'maintenance-journal.json'
+    atomic_json(path,{'mode':'restore','status':'failed','operation':'restore-test'})
+    window.poll()
+    assert window.operation_counts['needs_attention'].cget('text')=='1'
+    assert window.operation_counts['blocking'].cget('text')=='1'
+    window.operation_details_button.invoke()
+    assert 'maintenance-journal.json' in window.text_dialog.call_args.args[1]
+    window.navigate('overview')
+    assert window.operation_state_compact is False
+    assert window.operation_state_tree.winfo_exists()
+
+
 def test_preview_sections_and_settings_without_qt(window):
     for key,_,_ in window.sections:window.navigate(key)
     for key in ('general','https','directory','activation'):
