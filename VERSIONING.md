@@ -33,6 +33,10 @@ only `version`. The workflow:
 `build_only` stops after artifact validation. It does not create a draft, tags,
 or a release.
 
+For independent App, AI, Worker, Agent, or Manager artifacts without a Complete
+archive or a base release, use **Build selected ProdCast components** instead.
+See [COMPONENT-BUILDS.md](COMPONENT-BUILDS.md) for selection, source refs, and checks.
+
 ## Authentication
 
 Prefer a GitHub App installed on all five repositories. Add these repository or

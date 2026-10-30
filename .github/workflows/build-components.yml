@@ -1,0 +1,204 @@
+name: Build selected ProdCast components
+run-name: Component build ${{ inputs.version }} by @${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Internal build version (vMAJOR.MINOR.PATCH; creates no tag)
+        required: true
+        type: string
+      app:
+        description: Build App (prodcast-app)
+        type: boolean
+        default: false
+      ai:
+        description: Build AI (prodcast-ai)
+        type: boolean
+        default: false
+      worker:
+        description: Build Worker (prodcast-worker)
+        type: boolean
+        default: false
+      agent:
+        description: Build Agent (prodcast-agent)
+        type: boolean
+        default: false
+      manager:
+        description: Build Manager (prodcast-release)
+        type: boolean
+        default: false
+      source_refs:
+        description: 'Optional refs for selected components, e.g. {"app":"feature/pi-auth"}; default main'
+        type: string
+        default: '{}'
+      retention_days:
+        description: Artifact retention in days
+        type: choice
+        options: ['1', '3', '7']
+        default: '1'
+
+permissions:
+  contents: read
+
+env:
+  PRODCAST_RELEASE_APP_ID: ${{ secrets.PRODCAST_RELEASE_APP_ID }}
+
+jobs:
+  resolve:
+    name: Validate selection and freeze source commits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      version: ${{ steps.select.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+      - name: Test selection and artifact validation
+        run: python -m unittest discover -s prodcast-manager/tests -p test_component_builds.py -v
+      - name: Validate manual inputs
+        id: select
+        run: python prodcast-manager/release/component_builds.py select
+      - uses: actions/create-github-app-token@v2
+        if: env.PRODCAST_RELEASE_APP_ID != ''
+        id: release-token
+        with:
+          app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
+          private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
+          owner: Byteall-Energy
+          repositories: ${{ steps.select.outputs.repositories }}
+          permission-contents: read
+      - name: Resolve only selected sources
+        id: resolve
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN || github.token }}
+        run: python prodcast-manager/release/component_builds.py resolve
+      - uses: actions/upload-artifact@v4
+        with:
+          name: component-sources-${{ github.run_id }}
+          path: source-snapshot.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ fromJSON(inputs.retention_days) }}
+
+  build:
+    name: Build ${{ matrix.component }}
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      PRODCAST_RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      PRODCAST_SOURCE_REPOSITORY: ${{ matrix.repository }}
+      PRODCAST_PUBLISH_IMAGES: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: orchestrator
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: component-sources-${{ github.run_id }}
+          path: snapshot
+      - uses: actions/create-github-app-token@v2
+        if: env.PRODCAST_RELEASE_APP_ID != ''
+        id: release-token
+        with:
+          app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
+          private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
+          owner: Byteall-Energy
+          repositories: ${{ matrix.repo }}
+          permission-contents: read
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.sha }}
+          path: source
+          token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        if: matrix.component == 'app'
+        with:
+          node-version-file: source/.node-version
+      - name: Test App packaging tools
+        if: matrix.component == 'app'
+        working-directory: source
+        run: |
+          python -m pip install Django==5.2.17
+          python -m unittest discover -s release -p 'test_*.py'
+      - name: Build and smoke-test Linux payload
+        if: matrix.component == 'app' || matrix.component == 'ai'
+        working-directory: source
+        run: python release/build_linux.py
+      - name: Build and smoke-test Worker
+        if: matrix.component == 'worker'
+        working-directory: source
+        shell: pwsh
+        run: ./release/build_windows.ps1
+      - name: Build and smoke-test portable Agent
+        if: matrix.component == 'agent'
+        working-directory: source
+        shell: pwsh
+        run: ./release/build_windows.ps1 -Portable
+      - name: Install locked Manager build dependencies
+        if: matrix.component == 'manager'
+        working-directory: source/prodcast-manager
+        run: python -m pip install -r requirements-build.lock.txt
+      - name: Set Manager version
+        if: matrix.component == 'manager'
+        working-directory: source/prodcast-manager
+        shell: pwsh
+        run: python release/manager_version.py "$env:PRODCAST_RELEASE_VERSION"
+      - name: Test Manager
+        if: matrix.component == 'manager'
+        working-directory: source/prodcast-manager
+        shell: pwsh
+        run: ./build.ps1 -Python python -TestsOnly
+      - name: Upload Manager test reports
+        if: always() && matrix.component == 'manager'
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/prodcast-manager/.build/test-results/*.xml
+          if-no-files-found: warn
+          retention-days: ${{ fromJSON(inputs.retention_days) }}
+      - name: Build and smoke-test one-file Manager
+        if: matrix.component == 'manager'
+        working-directory: source/prodcast-manager
+        shell: pwsh
+        run: ./build.ps1 -Python python -Output dist -SkipTests
+      - name: Verify Manager version and name executable
+        if: matrix.component == 'manager'
+        working-directory: source/prodcast-manager
+        shell: pwsh
+        run: |
+          python release/manager_version.py "$env:PRODCAST_RELEASE_VERSION" --verify-exe dist/ProdCast-Manager.exe
+          if ($LASTEXITCODE) { throw 'Manager internal version does not match requested version' }
+          Move-Item -LiteralPath dist/ProdCast-Manager.exe -Destination "dist/ProdCast-Manager-$env:PRODCAST_RELEASE_VERSION.exe"
+      - name: Verify payload provenance and stage artifact
+        env:
+          BUILD_COMPONENT: ${{ matrix.component }}
+        shell: bash
+        run: >-
+          python orchestrator/prodcast-manager/release/component_builds.py stage
+          --component "$BUILD_COMPONENT" --snapshot snapshot/source-snapshot.json
+          --source source --destination artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProdCast-${{ matrix.component }}-${{ needs.resolve.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: ${{ fromJSON(inputs.retention_days) }}
