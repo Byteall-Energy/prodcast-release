@@ -139,7 +139,7 @@ jobs:
       - name: Install declared runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gcc libpq-dev unixodbc-dev
+          sudo apt-get install --yes --no-install-recommends gcc libpq-dev unixodbc-dev libkrb5-dev
           python -m pip install -r app/backend/requirements.txt
           # Worker owns its plugin and runtime dependencies; use its frozen source.
           (cd worker && python -m pip install -r requirements-worker.txt)
