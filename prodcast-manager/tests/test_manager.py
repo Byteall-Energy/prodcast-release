@@ -212,7 +212,9 @@ def test_remote_template_substitution_and_sql_grants():
     t=string.Template((RESOURCES/'app.env.in').read_text())
     values={name:'safe' for _,name,braced,_ in t.pattern.findall(t.template) for name in (name or braced,) if name}
     output=t.substitute(values)
-    assert 'ALLOW_INSECURE_TLS_VERIFY=false' in output and 'LICENSE_SERVICE_FAIL_OPEN=false' in output
+    assert 'ALLOW_INSECURE_TLS_VERIFY=true' in output
+    assert 'REQUIRE_TLS_FOR_REMOTE_SERVICES=true' in output
+    assert 'LICENSE_SERVICE_FAIL_OPEN=false' in output
     sql=(RESOURCES/'worker-grants.sql').read_text()
     assert 'SELECT (id,username) ON auth_user' in sql and 'ALL ON ALL' not in sql
 
