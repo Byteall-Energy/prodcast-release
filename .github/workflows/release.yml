@@ -133,13 +133,18 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           path: worker
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        shell: bash
+        run: |
+          python="/opt/python-$PYTHON_VERSION/bin/python3.14"
+          "$python" -c 'import os, sys; assert ".".join(map(str, sys.version_info[:3])) == os.environ["PYTHON_VERSION"], sys.version'
+          venv=$(mktemp -d "$RUNNER_TEMP/prodcast-python.XXXXXXXX")
+          "$python" -m venv "$venv"
+          printf '%s\n' "$venv/bin" >> "$GITHUB_PATH"
       - name: Install declared runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gcc libpq-dev unixodbc-dev libkrb5-dev
+          sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=300 install --yes --no-install-recommends gcc libpq-dev unixodbc-dev libkrb5-dev
           python -m pip install -r app/backend/requirements.txt
           # Worker owns its plugin and runtime dependencies; use its frozen source.
           (cd worker && python -m pip install -r requirements-worker.txt)
@@ -183,9 +188,14 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        shell: bash
+        run: |
+          python="/opt/python-$PYTHON_VERSION/bin/python3.14"
+          "$python" -c 'import os, sys; assert ".".join(map(str, sys.version_info[:3])) == os.environ["PYTHON_VERSION"], sys.version'
+          venv=$(mktemp -d "$RUNNER_TEMP/prodcast-python.XXXXXXXX")
+          "$python" -m venv "$venv"
+          printf '%s\n' "$venv/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
@@ -210,7 +220,7 @@ jobs:
   agent:
     name: Build portable Agent
     needs: resolve
-    runs-on: windows-2022
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v2
@@ -228,9 +238,19 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Use Python ${{ env.PYTHON_VERSION }} installed on the runner
+        shell: pwsh
+        run: |
+          $python = 'C:\Program Files\Python314\python.exe'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+            throw "Python is missing at $python"
+          }
+          $version = & $python --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne "Python $env:PYTHON_VERSION") {
+            throw "Expected Python $env:PYTHON_VERSION at $python. Got $version"
+          }
+          Split-Path -Parent $python |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build and smoke-test portable Agent
         shell: pwsh
         env:
@@ -259,7 +279,7 @@ jobs:
   worker:
     name: Build Worker
     needs: resolve
-    runs-on: windows-2022
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v2
@@ -277,9 +297,19 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Use Python ${{ env.PYTHON_VERSION }} installed on the runner
+        shell: pwsh
+        run: |
+          $python = 'C:\Program Files\Python314\python.exe'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+            throw "Python is missing at $python"
+          }
+          $version = & $python --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne "Python $env:PYTHON_VERSION") {
+            throw "Expected Python $env:PYTHON_VERSION at $python. Got $version"
+          }
+          Split-Path -Parent $python |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build and smoke-test Worker
         shell: pwsh
         env:
@@ -315,9 +345,14 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        shell: bash
+        run: |
+          python="/opt/python-$PYTHON_VERSION/bin/python3.14"
+          "$python" -c 'import os, sys; assert ".".join(map(str, sys.version_info[:3])) == os.environ["PYTHON_VERSION"], sys.version'
+          venv=$(mktemp -d "$RUNNER_TEMP/prodcast-python.XXXXXXXX")
+          "$python" -m venv "$venv"
+          printf '%s\n' "$venv/bin" >> "$GITHUB_PATH"
       - name: Build AI image and deployment payload
         env:
           PRODCAST_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
@@ -335,7 +370,7 @@ jobs:
   manager:
     name: Build Manager
     needs: resolve
-    runs-on: windows-2025
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 90
     steps:
       - uses: actions/create-github-app-token@v2
