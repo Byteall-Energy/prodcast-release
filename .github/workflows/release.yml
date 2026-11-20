@@ -63,7 +63,7 @@ jobs:
         run: |
           /opt/python-3.14.7/bin/python3.14 prodcast-manager/release/release_sources.py resolve \
             --version "$RELEASE_VERSION" \
-            --base-tag "${{ inputs.base_tag }}" \
+            --base-tag "${{ inputs.base_release }}" \
             --output source-snapshot.json
       - name: Upload immutable source plan
         uses: actions/upload-artifact@v4
@@ -442,10 +442,11 @@ jobs:
           retention-days: 1
 
   assemble:
-    name: Assemble and validate Complete
+    name: Assemble, validate, and publish Complete
     needs: [resolve, functional, app, agent, worker, ai, manager]
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 120
+    timeout-minutes: 180
+    environment: production-release
     steps:
       - uses: actions/create-github-app-token@v2
         if: env.PRODCAST_RELEASE_APP_ID != ''
@@ -497,14 +498,87 @@ jobs:
         with:
           name: manager-payload
           path: dist/components/manager
-      - name: Download the selected static/offline base
+      - name: Reuse or cache the selected static/offline base
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
-        run: >-
-          gh release download "${{ needs.resolve.outputs.base_tag }}"
-          --repo Byteall-Energy/prodcast-release
-          --pattern "${{ needs.resolve.outputs.base_asset }}"
-          --dir dist/base
+          BASE_TAG: ${{ needs.resolve.outputs.base_tag }}
+          BASE_ASSET: ${{ needs.resolve.outputs.base_asset }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import fcntl
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import tempfile
+          
+          repo = "Byteall-Energy/prodcast-release"
+          tag = os.environ["BASE_TAG"]
+          name = os.environ["BASE_ASSET"]
+          if Path(name).name != name or name in ("", ".", ".."):
+              raise SystemExit("Invalid base asset filename")
+          release = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{repo}/releases/tags/{tag}"], text=True))
+          asset = next(a for a in release["assets"] if a["name"] == name)
+          digest = asset.get("digest")
+          identity = {k: asset.get(k) for k in ("id", "size", "updated_at", "digest")}
+          cache = Path.home() / ".cache/prodcast-release/bases"
+          cache.mkdir(parents=True, exist_ok=True)
+          archive = cache / f"{asset['id']}-{name}"
+          metadata = archive.with_suffix(archive.suffix + ".json")
+          
+          def sha256(path):
+              h = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return "sha256:" + h.hexdigest()
+          
+          def verified(path, expected):
+              return path.is_file() and path.stat().st_size == asset["size"] and sha256(path) == expected
+          
+          with (cache / f"{asset['id']}.lock").open("w") as lock:
+              fcntl.flock(lock, fcntl.LOCK_EX)
+              cached = False
+              if metadata.is_file():
+                  saved = json.loads(metadata.read_text())
+                  cached = saved.get("asset") == identity and verified(archive, digest or saved.get("sha256"))
+              if not cached:
+                  with tempfile.TemporaryDirectory(dir=cache) as staging:
+                      staged = Path(staging) / name
+                      # Adopt ZIPs left by earlier assembly/download jobs only if GitHub
+                      # supplies a digest that can verify their exact contents.
+                      candidates = list((cache / "completed").glob(name))
+                      if digest:
+                          roots = [Path("/opt/actions-runner/_work"),
+                                   Path.home() / "additional-runners"]
+                          for root in roots:
+                              if root.exists():
+                                  candidates.extend(root.glob(f"**/dist/base/{name}"))
+                                  candidates.extend(root.glob(f"**/dist/assembled/{name}"))
+                      local = next((p for p in candidates if verified(p, digest)), None)
+                      if local:
+                          print(f"Reusing verified local base: {local}", flush=True)
+                          shutil.copyfile(local, staged)
+                      else:
+                          print(f"Downloading base {tag} once into shared cache", flush=True)
+                          subprocess.run(["gh", "release", "download", tag, "--repo", repo,
+                                          "--pattern", name, "--dir", staging], check=True)
+                      actual = sha256(staged)
+                      if staged.stat().st_size != asset["size"] or (digest and actual != digest):
+                          raise SystemExit("Base archive failed size/digest verification")
+                      os.replace(staged, archive)
+                      temp_metadata = Path(staging) / "metadata.json"
+                      temp_metadata.write_text(json.dumps({"asset": identity, "sha256": actual}))
+                      os.replace(temp_metadata, metadata)
+              print(f"Using shared base cache: {archive}", flush=True)
+              destination = Path("dist/base") / name
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(archive, destination)
+          PY
       - name: Assemble, checksum, and validate all provenance
         run: >-
           python prodcast-manager/release/assemble.py
@@ -521,51 +595,24 @@ jobs:
         run: |
           python -m pip install -r prodcast-manager/requirements.txt pytest==9.1.1
           python -m pytest prodcast-manager/tests/test_release_assembly.py prodcast-manager/tests/test_release_sources.py -q
-      - uses: actions/upload-artifact@v4
-        with:
-          name: verified-release-assets
-          path: dist/assembled/*
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-  publish:
-    name: Draft, tag snapshot, and publish
-    if: ${{ ! inputs.build_only }}
-    needs: [resolve, assemble]
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 45
-    environment: production-release
-    steps:
-      - uses: actions/create-github-app-token@v2
-        if: env.PRODCAST_RELEASE_APP_ID != ''
-        id: release-token
+      - name: Refresh publication token
+        if: ${{ ! inputs.build_only && env.PRODCAST_RELEASE_APP_ID != '' }}
+        uses: actions/create-github-app-token@v2
+        id: publish-token
         with:
           app-id: ${{ env.PRODCAST_RELEASE_APP_ID }}
           private-key: ${{ secrets.PRODCAST_RELEASE_APP_PRIVATE_KEY }}
           owner: Byteall-Energy
           repositories: prodcast-release,prodcast-app,prodcast-agent,prodcast-worker,prodcast-ai
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve.outputs.release_sha }}
-          token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: source-snapshot
-          path: dist/snapshot
-      - uses: actions/download-artifact@v4
-        with:
-          name: verified-release-assets
-          path: dist/assembled
       - name: Revalidate release and tag absence
+        if: ${{ ! inputs.build_only }}
         env:
-          PRODCAST_RELEASE_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
+          PRODCAST_RELEASE_TOKEN: ${{ steps.publish-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
         run: python prodcast-manager/release/release_sources.py preflight --snapshot dist/snapshot/source-snapshot.json
       - name: Create draft and upload verified assets
+        if: ${{ ! inputs.build_only }}
         env:
-          GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.publish-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
         run: >-
           gh release create "$RELEASE_VERSION"
           dist/assembled/*
@@ -575,34 +622,44 @@ jobs:
           --notes-file dist/assembled/RELEASE-NOTES.md
           --draft
       - name: Recheck and create immutable tags in every repository
+        if: ${{ ! inputs.build_only }}
         env:
-          PRODCAST_RELEASE_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
+          PRODCAST_RELEASE_TOKEN: ${{ steps.publish-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
         run: python prodcast-manager/release/release_sources.py create-tags --snapshot dist/snapshot/source-snapshot.json
       - name: Publish only after every tag is verified
+        if: ${{ ! inputs.build_only }}
         env:
-          GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.publish-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
         run: gh release edit "$RELEASE_VERSION" --repo Byteall-Energy/prodcast-release --draft=false
       - name: Write release summary
+        if: ${{ ! inputs.build_only }}
         env:
           BASE_TAG: ${{ needs.resolve.outputs.base_tag }}
         run: python prodcast-manager/release/write_summary.py dist/snapshot/source-snapshot.json dist/assembled "$GITHUB_STEP_SUMMARY" published
 
-  build-only-summary:
-    name: Build-only summary
-    if: ${{ inputs.build_only }}
-    needs: [resolve, assemble]
-    runs-on: [self-hosted, Linux, X64]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve.outputs.release_sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: source-snapshot
-          path: dist/snapshot
-      - uses: actions/download-artifact@v4
+      - name: Retain Complete archive on this VM
+        shell: bash
+        run: |
+          cache="$HOME/.cache/prodcast-release/bases/completed"
+          mkdir -p "$cache"
+          archive="dist/assembled/ProdCast-$RELEASE_VERSION-complete.zip"
+          test -f "$archive"
+          staging=$(mktemp "$cache/.complete.XXXXXXXX")
+          cp "$archive" "$staging"
+          mv "$staging" "$cache/ProdCast-$RELEASE_VERSION-complete.zip"
+
+      - name: Write build-only summary
+        if: ${{ inputs.build_only }}
+        env:
+          BASE_TAG: ${{ needs.resolve.outputs.base_tag }}
+        run: python prodcast-manager/release/write_summary.py dist/snapshot/source-snapshot.json dist/assembled "$GITHUB_STEP_SUMMARY" build-only
+
+      - name: Keep build-only assets available for download
+        if: ${{ inputs.build_only }}
+        uses: actions/upload-artifact@v4
         with:
           name: verified-release-assets
-          path: dist/assembled
-      - run: python prodcast-manager/release/write_summary.py dist/snapshot/source-snapshot.json dist/assembled "$GITHUB_STEP_SUMMARY" build-only
+          path: dist/assembled/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
