@@ -387,9 +387,23 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11.9'
+      - name: Create Manager Python 3.14.7 environment
+        shell: pwsh
+        run: |
+          $python = 'C:\Program Files\Python314\python.exe'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+            throw "Python is missing at $python"
+          }
+
+          & $python -c "import sys; assert sys.version_info[:3] == (3, 14, 7), sys.version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $venv = Join-Path $env:RUNNER_TEMP "manager-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & $python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Join-Path $venv 'Scripts' |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install locked build dependencies
         working-directory: prodcast-manager
         run: python -m pip install -r requirements-build.lock.txt
