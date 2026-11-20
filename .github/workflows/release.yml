@@ -33,7 +33,7 @@ env:
 jobs:
   resolve:
     name: Freeze source snapshot
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
     outputs:
       app_sha: ${{ steps.snapshot.outputs.app_sha }}
@@ -77,7 +77,7 @@ jobs:
   functional:
     name: App and Worker functional release gate
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     services:
       postgres:
@@ -165,7 +165,7 @@ jobs:
   app:
     name: Build App
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v2
@@ -297,7 +297,7 @@ jobs:
   ai:
     name: Build AI
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v2
@@ -395,7 +395,7 @@ jobs:
   assemble:
     name: Assemble and validate Complete
     needs: [resolve, functional, app, agent, worker, ai, manager]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v2
@@ -479,7 +479,7 @@ jobs:
     name: Draft, tag snapshot, and publish
     if: ${{ ! inputs.build_only }}
     needs: [resolve, assemble]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     environment: production-release
     steps:
@@ -537,7 +537,7 @@ jobs:
     name: Build-only summary
     if: ${{ inputs.build_only }}
     needs: [resolve, assemble]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
         with:
