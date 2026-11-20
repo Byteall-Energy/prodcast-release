@@ -461,9 +461,14 @@ jobs:
           token: ${{ steps.release-token.outputs.token || secrets.PRODCAST_RELEASE_TOKEN }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Create Python 3.14.7 environment
+        shell: bash
+        run: |
+          python=/opt/python-3.14.7/bin/python3.14
+          "$python" -c 'import sys; assert sys.version_info[:3] == (3, 14, 7), sys.version'
+          venv=$(mktemp -d "$RUNNER_TEMP/prodcast-assemble.XXXXXXXX")
+          "$python" -m venv "$venv"
+          printf '%s\n' "$venv/bin" >> "$GITHUB_PATH"
       - uses: actions/download-artifact@v4
         with:
           name: source-snapshot
